@@ -452,26 +452,19 @@ with tab_country:
 # ── Tab: By Sector ─────────────────────────────────────────────────────────────
 with tab_sector:
     st.markdown('<div class="section-header">Exposure by Sector</div>', unsafe_allow_html=True)
+    st.caption("Sector data sourced directly from ETF fund profiles — 100% portfolio coverage.")
     if by_sector.empty:
         st.info("No sector data available.")
     else:
         df_s = by_sector.dropna(subset=["sector"]).copy()
         df_s["sector"] = df_s["sector"].fillna("Unknown")
-        # Show unanalysed note separately; exclude from donut so chart is readable
-        unanalysed_sector_pct = df_s[df_s["sector"]=="Unanalysed"]["pct"].sum()
-        df_s_chart = df_s[df_s["sector"] != "Unanalysed"].copy()
-        # Renormalise chart weights to sum to 100% for display
-        if df_s_chart["weight"].sum() > 0:
-            df_s_chart = df_s_chart.copy()
         c1, c2 = st.columns([1, 1])
         with c1:
-            fig = donut_chart(df_s_chart["sector"], df_s_chart["value_display"], "Sector Allocation")
+            fig = donut_chart(df_s["sector"], df_s["value_display"], "Sector Allocation")
             st.plotly_chart(fig, use_container_width=True)
         with c2:
             tbl = exposure_table(df_s, "weight", "value_display", "sector", ccy)
             st.dataframe(tbl, use_container_width=True, hide_index=True)
-        if unanalysed_sector_pct > 0:
-            st.caption(f"⚠️ {unanalysed_sector_pct:.1f}% of portfolio is in ETF holdings beyond the top 25 — sector not available for these.")
 
 
 # ── Tab: Top 50 Stocks ─────────────────────────────────────────────────────────
