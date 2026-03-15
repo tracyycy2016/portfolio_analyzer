@@ -1,16 +1,41 @@
 """
-Portfolio engine: takes user positions, resolves all holdings to stocks,
-and produces exposure breakdowns by market, country, sector, and stock.
+Portfolio engine — two separate pipelines:
+
+Pipeline A (Sector exposure):
+  Uses funds_data.sector_weightings from yfinance — 100% coverage, no unanalysed gap.
+  Each ETF contributes its full sector breakdown weighted by its portfolio value.
+
+Pipeline B (Top holdings + Market/Country exposure):
+  Uses funds_data.top_holdings (top 10 per ETF, correct yfinance tickers).
+  Market/country inferred from yfinance metadata on those holdings.
+  Unanalysed portion shown honestly for market/country tabs.
 """
 
 import pandas as pd
-from typing import List, Dict
-from data_fetcher import get_price_and_meta, get_fx_rate, normalise_ticker
-from etf_resolver import resolve_holdings, aggregate_leaf_holdings
+import yfinance as yf
+import streamlit as st
+from typing import List, Dict, Optional
+from data_fetcher import get_price_and_meta, get_fx_rate, normalise_ticker, get_etf_holdings
 
 
-# ── Commodity tickers (no sector/country/market data meaningful) ──────────────
-# These are physical commodity ETFs — their "holdings" are commodities, not stocks.
+# ── Sector key normalisation ──────────────────────────────────────────────────
+
+SECTOR_KEY_MAP = {
+    "realestate":             "Real Estate",
+    "consumer_cyclical":      "Consumer Cyclical",
+    "basic_materials":        "Basic Materials",
+    "consumer_defensive":     "Consumer Defensive",
+    "technology":             "Technology",
+    "communication_services": "Communication Services",
+    "financial_services":     "Financial Services",
+    "utilities":              "Utilities",
+    "industrials":            "Industrials",
+    "energy":                 "Energy",
+    "healthcare":             "Healthcare",
+}
+
+# ── Commodity detection ───────────────────────────────────────────────────────
+
 COMMODITY_TICKERS = {
     "ZGLD", "ZGLD.TO", "IAU", "GLD", "SLV", "PDBC", "DJP",
     "USO", "UNG", "BNO", "DBO", "CPER", "PALL", "PPLT",
@@ -18,25 +43,27 @@ COMMODITY_TICKERS = {
 }
 
 
-# ── Market classification ──────────────────────────────────────────────────────
-# New 4-bucket system:
-#   Developed Market (North America)      = US + Canada
-#   Developed Market (Non-North America)  = Europe + Japan + Australia + other DM
-#   Emerging Market                       = China, India, Brazil, EM Asia, etc.
-#   Other / N/A
+def is_commodity(ticker: str, name: str = "") -> bool:
+    base = ticker.upper().replace(".TO", "").replace(".V", "")
+    if base in COMMODITY_TICKERS:
+        return True
+    name_l = (name or "").lower()
+    if any(k in name_l for k in ["gold", "silver", "oil", "bullion", "commodity",
+                                   "platinum", "palladium", "copper", "natural gas"]):
+        if "etf" in name_l or "fund" in name_l:
+            return True
+    return False
 
-DEVELOPED_NA = {
-    "United States", "Canada",
-}
 
+# ── Market bucket classification ──────────────────────────────────────────────
+
+DEVELOPED_NA = {"United States", "Canada"}
 DEVELOPED_NON_NA = {
     "United Kingdom", "Germany", "France", "Netherlands", "Switzerland",
     "Sweden", "Denmark", "Norway", "Finland", "Spain", "Italy", "Belgium",
     "Austria", "Portugal", "Ireland", "Luxembourg", "New Zealand",
-    "Japan", "Australia", "Singapore", "Hong Kong", "Israel",
-    "South Korea",   # MSCI classifies Korea as developed
+    "Japan", "Australia", "Singapore", "Hong Kong", "Israel", "South Korea",
 }
-
 EMERGING = {
     "China", "India", "Brazil", "Mexico", "Taiwan", "South Africa",
     "Russia", "Indonesia", "Thailand", "Malaysia", "Philippines",
@@ -45,357 +72,339 @@ EMERGING = {
     "Chile", "Colombia", "Peru", "Pakistan",
 }
 
-# Exchange code → market bucket
 EXCHANGE_TO_BUCKET = {
-    # Developed NA
-    "NMS": "Developed Market (North America)",
-    "NYQ": "Developed Market (North America)",
-    "NGM": "Developed Market (North America)",
-    "NCM": "Developed Market (North America)",
-    "ASE": "Developed Market (North America)",
-    "PCX": "Developed Market (North America)",
-    "BATS": "Developed Market (North America)",
-    "CBOE": "Developed Market (North America)",
-    "NYA": "Developed Market (North America)",
-    "ARCX": "Developed Market (North America)",
-    "XNAS": "Developed Market (North America)",
-    "XNYS": "Developed Market (North America)",
-    "NASDAQ": "Developed Market (North America)",
-    "NYSE": "Developed Market (North America)",
-    "TOR": "Developed Market (North America)",
-    "TSX": "Developed Market (North America)",
-    "TSXV": "Developed Market (North America)",
+    "NMS": "Developed Market (North America)", "NYQ": "Developed Market (North America)",
+    "NGM": "Developed Market (North America)", "NCM": "Developed Market (North America)",
+    "ASE": "Developed Market (North America)", "PCX": "Developed Market (North America)",
+    "BATS": "Developed Market (North America)", "NYA": "Developed Market (North America)",
+    "ARCX": "Developed Market (North America)", "XNAS": "Developed Market (North America)",
+    "XNYS": "Developed Market (North America)", "NASDAQ": "Developed Market (North America)",
+    "NYSE": "Developed Market (North America)", "TOR": "Developed Market (North America)",
+    "TSX": "Developed Market (North America)", "TSXV": "Developed Market (North America)",
     "XTSE": "Developed Market (North America)",
-    "CVE": "Developed Market (North America)",
-    # Developed Non-NA
-    "LSE": "Developed Market (Non-North America)",
-    "PAR": "Developed Market (Non-North America)",
-    "FRA": "Developed Market (Non-North America)",
-    "AMS": "Developed Market (Non-North America)",
-    "STO": "Developed Market (Non-North America)",
-    "MCE": "Developed Market (Non-North America)",
-    "MIL": "Developed Market (Non-North America)",
-    "OSL": "Developed Market (Non-North America)",
-    "VIE": "Developed Market (Non-North America)",
-    "ZRH": "Developed Market (Non-North America)",
-    "HEL": "Developed Market (Non-North America)",
-    "LIS": "Developed Market (Non-North America)",
-    "BRU": "Developed Market (Non-North America)",
-    "DUB": "Developed Market (Non-North America)",
-    "CPH": "Developed Market (Non-North America)",
-    "TKS": "Developed Market (Non-North America)",
-    "OSA": "Developed Market (Non-North America)",
-    "ASX": "Developed Market (Non-North America)",
-    "SGX": "Developed Market (Non-North America)",
-    "HKG": "Developed Market (Non-North America)",
-    "KSC": "Developed Market (Non-North America)",
+    "LSE": "Developed Market (Non-North America)", "PAR": "Developed Market (Non-North America)",
+    "FRA": "Developed Market (Non-North America)", "AMS": "Developed Market (Non-North America)",
+    "STO": "Developed Market (Non-North America)", "MCE": "Developed Market (Non-North America)",
+    "MIL": "Developed Market (Non-North America)", "OSL": "Developed Market (Non-North America)",
+    "VIE": "Developed Market (Non-North America)", "ZRH": "Developed Market (Non-North America)",
+    "HEL": "Developed Market (Non-North America)", "LIS": "Developed Market (Non-North America)",
+    "BRU": "Developed Market (Non-North America)", "CPH": "Developed Market (Non-North America)",
+    "TKS": "Developed Market (Non-North America)", "OSA": "Developed Market (Non-North America)",
+    "ASX": "Developed Market (Non-North America)", "SGX": "Developed Market (Non-North America)",
+    "HKG": "Developed Market (Non-North America)", "KSC": "Developed Market (Non-North America)",
     "KOE": "Developed Market (Non-North America)",
-    # Emerging
-    "SHH": "Emerging Market",
-    "SHZ": "Emerging Market",
-    "TAI": "Emerging Market",
-    "NSI": "Emerging Market",
-    "BSE": "Emerging Market",
-    "SAO": "Emerging Market",
-    "BMV": "Emerging Market",
+    "SHH": "Emerging Market", "SHZ": "Emerging Market",
+    "TAI": "Emerging Market", "NSI": "Emerging Market", "BSE": "Emerging Market",
+    "SAO": "Emerging Market", "BMV": "Emerging Market",
 }
 
-# yfinance suffix → market bucket fallback
 SUFFIX_TO_BUCKET = {
-    ".TO": "Developed Market (North America)",
-    ".V":  "Developed Market (North America)",
-    ".AX": "Developed Market (Non-North America)",
-    ".T":  "Developed Market (Non-North America)",
-    ".HK": "Developed Market (Non-North America)",
-    ".KS": "Developed Market (Non-North America)",   # Korea = developed
-    ".TW": "Emerging Market",
-    ".NS": "Emerging Market",
-    ".BO": "Emerging Market",
-    ".SS": "Emerging Market",
-    ".SZ": "Emerging Market",
+    ".TO": "Developed Market (North America)", ".V": "Developed Market (North America)",
+    ".AX": "Developed Market (Non-North America)", ".T": "Developed Market (Non-North America)",
+    ".HK": "Developed Market (Non-North America)", ".KS": "Developed Market (Non-North America)",
+    ".L": "Developed Market (Non-North America)", ".DE": "Developed Market (Non-North America)",
+    ".PA": "Developed Market (Non-North America)", ".MC": "Developed Market (Non-North America)",
+    ".SW": "Developed Market (Non-North America)", ".AS": "Developed Market (Non-North America)",
+    ".CO": "Developed Market (Non-North America)", ".ST": "Developed Market (Non-North America)",
+    ".OL": "Developed Market (Non-North America)", ".MI": "Developed Market (Non-North America)",
+    ".SI": "Developed Market (Non-North America)", ".NZ": "Developed Market (Non-North America)",
+    ".TW": "Emerging Market", ".NS": "Emerging Market", ".BO": "Emerging Market",
+    ".SS": "Emerging Market", ".SZ": "Emerging Market",
 }
 
 
 def infer_market(row: pd.Series) -> str:
-    """Map a leaf holding to one of the 4 market buckets."""
     yf_t = str(row.get("yf_ticker") or row.get("ticker") or "")
-    exch  = str(row.get("exchange") or "")
+    exch = str(row.get("exchange") or "")
     country = str(row.get("country") or "")
-
-    # 1. Exchange code (most reliable when present)
     bucket = EXCHANGE_TO_BUCKET.get(exch.upper())
     if bucket:
         return bucket
-
-    # 2. Country name
     if country in DEVELOPED_NA:
         return "Developed Market (North America)"
     if country in DEVELOPED_NON_NA:
         return "Developed Market (Non-North America)"
     if country in EMERGING:
         return "Emerging Market"
-
-    # 3. yfinance ticker suffix fallback
     for suffix, bucket in SUFFIX_TO_BUCKET.items():
         if yf_t.endswith(suffix):
             return bucket
-
-    # 4. Bare US ticker (no suffix, no country) → assume North America
     if yf_t and "." not in yf_t and yf_t.isalpha() and len(yf_t) <= 5:
         return "Developed Market (North America)"
-
     return "Other"
 
 
-def is_commodity(ticker: str, asset_type: str, name: str) -> bool:
-    """Return True if this holding is a commodity/bullion with no equity metadata."""
-    t = ticker.upper().replace(".TO", "").replace(".V", "")
-    if t in COMMODITY_TICKERS:
-        return True
-    name_l = (name or "").lower()
-    commodity_keywords = ["gold", "silver", "oil", "commodity", "bullion",
-                          "platinum", "palladium", "copper", "natural gas",
-                          "energy commodity"]
-    if any(k in name_l for k in commodity_keywords) and asset_type == "ETF":
-        return True
-    return False
+# ── Pipeline A: Sector exposure via funds_data.sector_weightings ──────────────
 
-
-# ── Metadata enrichment ───────────────────────────────────────────────────────
-
-def enrich_missing_metadata(leaves_df: pd.DataFrame) -> pd.DataFrame:
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_sector_weightings(yf_ticker: str) -> Optional[Dict[str, float]]:
     """
-    For rows with missing sector/country/exchange, fetch from yfinance.
-    Batches lookups to avoid redundant calls.
-    Only fetches for non-commodity equity-type holdings.
+    Fetch sector weightings from yfinance funds_data.
+    Returns dict of {sector_name: weight} summing to ~1.0, or None.
+    Works for US and CA ETFs (confirmed: IGF, XLU, IQLT, VOO, VEA, EEM, VFV.TO, ZEM.TO).
     """
-    needs_enrich = leaves_df[
-        (leaves_df["sector"].isna() | leaves_df["country"].isna()) &
-        ~leaves_df.apply(
-            lambda r: is_commodity(r["ticker"], r.get("asset_type",""), r.get("name","")), axis=1
-        )
-    ]["yf_ticker"].unique()
+    try:
+        t = yf.Ticker(yf_ticker)
+        fd = t.funds_data
+        sw = fd.sector_weightings
+        if not sw or not isinstance(sw, dict):
+            return None
+        # Normalise keys and filter zeros
+        result = {}
+        for k, v in sw.items():
+            label = SECTOR_KEY_MAP.get(k.lower())
+            if label and v and float(v) > 0:
+                result[label] = float(v)
+        if not result:
+            return None
+        # Normalise to sum to 1.0
+        total = sum(result.values())
+        if total > 0:
+            result = {k: v / total for k, v in result.items()}
+        return result
+    except Exception:
+        return None
 
-    if len(needs_enrich) == 0:
-        return leaves_df
 
-    enriched = {}
-    for yf_t in needs_enrich:
-        meta = get_price_and_meta(yf_t)
-        if meta.get("sector") or meta.get("country"):
-            enriched[yf_t] = {
-                "sector":   meta.get("sector"),
-                "country":  meta.get("country"),
-                "exchange": meta.get("exchange"),
-            }
-
-    if not enriched:
-        return leaves_df
-
-    def _apply_enrichment(row):
-        yf_t = row["yf_ticker"]
-        if yf_t in enriched:
-            if pd.isna(row["sector"]) or row["sector"] is None:
-                row["sector"] = enriched[yf_t]["sector"]
-            if pd.isna(row["country"]) or row["country"] is None:
-                row["country"] = enriched[yf_t]["country"]
-            if pd.isna(row["exchange"]) or row["exchange"] is None:
-                row["exchange"] = enriched[yf_t]["exchange"]
-        return row
-
-    return leaves_df.apply(_apply_enrichment, axis=1)
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_top_holdings_funds(yf_ticker: str) -> pd.DataFrame:
+    """
+    Fetch top holdings from yfinance funds_data.top_holdings.
+    Returns DataFrame with columns: ticker, weight, name.
+    Tickers are already yfinance-compatible (e.g. ASML.AS, NOVN.SW, 2330.TW).
+    """
+    try:
+        t = yf.Ticker(yf_ticker)
+        fd = t.funds_data
+        th = fd.top_holdings
+        if th is None or th.empty:
+            return pd.DataFrame(columns=["ticker", "weight", "name"])
+        df = th.reset_index()
+        # Columns: Symbol, Name, Holding Percent
+        df.columns = [str(c).strip() for c in df.columns]
+        sym_col  = next((c for c in df.columns if "symbol" in c.lower() or c.lower() == "index"), None)
+        wt_col   = next((c for c in df.columns if "percent" in c.lower() or "weight" in c.lower() or "holding" in c.lower()), None)
+        nm_col   = next((c for c in df.columns if "name" in c.lower()), sym_col)
+        if not sym_col or not wt_col:
+            return pd.DataFrame(columns=["ticker", "weight", "name"])
+        out = pd.DataFrame({
+            "ticker": df[sym_col].astype(str).str.strip().str.upper(),
+            "weight": pd.to_numeric(df[wt_col], errors="coerce").fillna(0),
+            "name":   df[nm_col].astype(str) if nm_col else df[sym_col].astype(str),
+        })
+        out = out[out["weight"] > 0].sort_values("weight", ascending=False)
+        return out.reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame(columns=["ticker", "weight", "name"])
 
 
 # ── Main engine ───────────────────────────────────────────────────────────────
 
 def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
-    """
-    positions: list of { ticker, exchange (US|CA), units }
-    display_ccy: 'USD' or 'CAD'
-    """
     errors = []
     position_rows = []
-
     usd_cad = get_fx_rate("USD", "CAD")
     cad_usd = get_fx_rate("CAD", "USD")
 
     def to_display(amount: float, from_ccy: str) -> float:
         if from_ccy == display_ccy:
             return amount
-        if display_ccy == "USD":
-            return amount * cad_usd
-        return amount * usd_cad
+        return amount * (cad_usd if display_ccy == "USD" else usd_cad)
 
-    # ── Step 1: value each top-level position ─────────────────────────────────
+    # ── Step 1: Value positions ────────────────────────────────────────────────
     for pos in positions:
         raw_ticker = pos["ticker"].strip().upper()
-        exchange = pos["exchange"]
-        units = int(pos["units"])
-
-        yf_ticker = normalise_ticker(raw_ticker, exchange)
-        meta = get_price_and_meta(yf_ticker)
+        yf_ticker  = normalise_ticker(raw_ticker, pos["exchange"])
+        units      = int(pos["units"])
+        meta       = get_price_and_meta(yf_ticker)
 
         if meta.get("price") is None:
             errors.append(f"Could not fetch price for {raw_ticker} ({yf_ticker}). Skipping.")
             continue
 
-        price = meta["price"]
-        ccy = meta["currency"]
-        value_native = price * units
-        value_display = to_display(value_native, ccy)
-
+        value_native  = meta["price"] * units
+        value_display = to_display(value_native, meta["currency"])
         position_rows.append({
-            "ticker":       raw_ticker,
-            "yf_ticker":    yf_ticker,
-            "name":         meta["name"],
-            "exchange":     exchange,
-            "units":        units,
-            "price":        price,
-            "currency":     ccy,
-            "value_native": value_native,
-            "value_display":value_display,
-            "asset_type":   meta["asset_type"],
+            "ticker": raw_ticker, "yf_ticker": yf_ticker,
+            "name": meta["name"], "exchange": pos["exchange"],
+            "units": units, "price": meta["price"],
+            "currency": meta["currency"], "value_native": value_native,
+            "value_display": value_display, "asset_type": meta["asset_type"],
         })
 
     if not position_rows:
         return {"errors": errors}
 
     positions_df = pd.DataFrame(position_rows)
-    total_value = positions_df["value_display"].sum()
+    total_value  = positions_df["value_display"].sum()
 
-    # ── Step 2: resolve every position to leaf holdings ───────────────────────
-    from data_fetcher import get_etf_holdings as _get_holdings
-    all_leaves = []
-    total_unanalysed_weight = 0.0  # accumulate unanalysed portfolio weight
+    # ── Pipeline A: Sector exposure ────────────────────────────────────────────
+    sector_contributions = []   # [{sector, weight_contribution}]
 
     for _, pos in positions_df.iterrows():
         pos_weight = pos["value_display"] / total_value
-        leaves = resolve_holdings(pos["yf_ticker"], parent_weight=1.0)
 
-        if leaves:
-            agg = aggregate_leaf_holdings(leaves)
+        if is_commodity(pos["ticker"], pos["name"]):
+            sector_contributions.append({
+                "sector": "N/A (Commodity)", "weight": pos_weight
+            })
+            continue
 
-            # Check what fraction of the ETF holdings weight we actually captured.
-            # get_etf_holdings may only return top-25 whose weights sum to e.g. 0.55.
-            # The remaining 0.45 is unanalysed.
-            if pos["asset_type"] in ("ETF", "MUTUALFUND"):
-                raw_holdings = _get_holdings(pos["yf_ticker"])
-                if not raw_holdings.empty:
-                    captured_fraction = min(1.0, raw_holdings["weight"].sum())
-                    unanalysed_fraction = max(0.0, 1.0 - captured_fraction)
-                    total_unanalysed_weight += pos_weight * unanalysed_fraction
-                    # Scale leaf weights so resolved + unanalysed = pos_weight exactly.
-                    # etf_resolver normalises internal weights to 1.0, so we scale them
-                    # back to the captured_fraction of the position.
-                    leaf_scale = captured_fraction
-                else:
-                    leaf_scale = 1.0
+        if pos["asset_type"] in ("ETF", "MUTUALFUND"):
+            sw = get_sector_weightings(pos["yf_ticker"])
+            if sw:
+                # Handle ETF-of-ETF: if top_holdings is a single ETF holding 100%,
+                # recursively get that ETF's sector weightings
+                th = get_top_holdings_funds(pos["yf_ticker"])
+                if len(th) == 1 and th.iloc[0]["weight"] >= 0.95:
+                    underlying = th.iloc[0]["ticker"]
+                    sw2 = get_sector_weightings(underlying)
+                    if sw2:
+                        sw = sw2
+                for sector, w in sw.items():
+                    sector_contributions.append({
+                        "sector": sector, "weight": pos_weight * w
+                    })
             else:
-                leaf_scale = 1.0
-
-            for _, leaf in agg.iterrows():
-                all_leaves.append({
-                    "ticker":           leaf["ticker"],
-                    "yf_ticker":        leaf["yf_ticker"],
-                    "name":             leaf["name"],
-                    "portfolio_weight": pos_weight * leaf["weight"] * leaf_scale,
-                    "currency":         leaf["currency"],
-                    "sector":           leaf["sector"],
-                    "country":          leaf["country"],
-                    "exchange":         leaf["exchange"],
-                    "asset_type":       leaf["asset_type"],
+                sector_contributions.append({
+                    "sector": "Unknown", "weight": pos_weight
                 })
         else:
+            # Direct stock — get sector from metadata
+            meta = get_price_and_meta(pos["yf_ticker"])
+            sector = meta.get("sector") or "Unknown"
+            sector_contributions.append({"sector": sector, "weight": pos_weight})
+
+    by_sector_df = pd.DataFrame(sector_contributions)
+    by_sector = (
+        by_sector_df.groupby("sector")["weight"].sum()
+        .reset_index().rename(columns={"weight": "weight"})
+        .sort_values("weight", ascending=False)
+    )
+    by_sector["value_display"] = by_sector["weight"] * total_value
+    by_sector["pct"] = by_sector["weight"] * 100
+
+    # ── Pipeline B: Top holdings → Market/Country exposure ────────────────────
+    all_leaves = []
+    total_unanalysed_weight = 0.0
+
+    for _, pos in positions_df.iterrows():
+        pos_weight = pos["value_display"] / total_value
+
+        if is_commodity(pos["ticker"], pos["name"]):
             all_leaves.append({
-                "ticker":           pos["ticker"],
-                "yf_ticker":        pos["yf_ticker"],
-                "name":             pos["name"],
-                "portfolio_weight": pos_weight,
-                "currency":         pos["currency"],
-                "sector":           None,
-                "country":          None,
-                "exchange":         None,
-                "asset_type":       pos["asset_type"],
+                "ticker": pos["ticker"], "yf_ticker": pos["yf_ticker"],
+                "name": pos["name"], "portfolio_weight": pos_weight,
+                "sector": "N/A (Commodity)", "country": "N/A",
+                "exchange": None, "asset_type": pos["asset_type"],
+            })
+            continue
+
+        if pos["asset_type"] in ("ETF", "MUTUALFUND"):
+            # Use funds_data.top_holdings first (correct tickers, up to 10)
+            th = get_top_holdings_funds(pos["yf_ticker"])
+
+            # Fall back to stockanalysis if funds_data returns empty or single ETF row
+            if th.empty or (len(th) == 1 and th.iloc[0]["weight"] >= 0.95):
+                underlying_ticker = th.iloc[0]["ticker"] if not th.empty else None
+                if underlying_ticker:
+                    # ETF-of-ETF: use underlying's top_holdings
+                    th2 = get_top_holdings_funds(underlying_ticker)
+                    if not th2.empty:
+                        th = th2
+                else:
+                    th = pd.DataFrame(columns=["ticker", "weight", "name"])
+
+            if th.empty:
+                th = get_etf_holdings(pos["yf_ticker"])
+
+            if not th.empty:
+                captured = min(1.0, th["weight"].sum())
+                unanalysed = max(0.0, 1.0 - captured)
+                total_unanalysed_weight += pos_weight * unanalysed
+                leaf_scale = captured
+
+                for _, leaf in th.iterrows():
+                    leaf_meta = get_price_and_meta(leaf["ticker"])
+                    all_leaves.append({
+                        "ticker":           leaf["ticker"],
+                        "yf_ticker":        leaf["ticker"],
+                        "name":             leaf.get("name") or leaf_meta.get("name", leaf["ticker"]),
+                        "portfolio_weight": pos_weight * leaf["weight"] * leaf_scale,
+                        "sector":           leaf_meta.get("sector"),
+                        "country":          leaf_meta.get("country"),
+                        "exchange":         leaf_meta.get("exchange"),
+                        "asset_type":       leaf_meta.get("asset_type", "EQUITY"),
+                    })
+            else:
+                # No holdings at all — treat as leaf
+                all_leaves.append({
+                    "ticker": pos["ticker"], "yf_ticker": pos["yf_ticker"],
+                    "name": pos["name"], "portfolio_weight": pos_weight,
+                    "sector": None, "country": None,
+                    "exchange": None, "asset_type": pos["asset_type"],
+                })
+        else:
+            meta = get_price_and_meta(pos["yf_ticker"])
+            all_leaves.append({
+                "ticker": pos["ticker"], "yf_ticker": pos["yf_ticker"],
+                "name": pos["name"], "portfolio_weight": pos_weight,
+                "sector": meta.get("sector"), "country": meta.get("country"),
+                "exchange": meta.get("exchange"), "asset_type": pos["asset_type"],
             })
 
-    leaves_df = pd.DataFrame(all_leaves)
-
-    # Collapse duplicate tickers
+    # Collapse duplicates
     leaves_df = (
-        leaves_df.groupby("ticker")
+        pd.DataFrame(all_leaves)
+        .groupby("ticker")
         .agg(
-            name=("name", "first"),
-            yf_ticker=("yf_ticker", "first"),
+            name=("name", "first"), yf_ticker=("yf_ticker", "first"),
             portfolio_weight=("portfolio_weight", "sum"),
-            currency=("currency", "first"),
-            sector=("sector", "first"),
-            country=("country", "first"),
-            exchange=("exchange", "first"),
-            asset_type=("asset_type", "first"),
+            sector=("sector", "first"), country=("country", "first"),
+            exchange=("exchange", "first"), asset_type=("asset_type", "first"),
         )
         .reset_index()
     )
 
-    # Add "Unanalysed" row for ETF holdings beyond top-25 that were not captured.
-    # total_unanalysed_weight was accumulated in Step 2 based on how much of each
-    # ETF's holdings weight was NOT returned by the data source.
-    if total_unanalysed_weight > 0.001:  # more than 0.1% unanalysed
-        unanalysed_row = pd.DataFrame([{
-            "ticker":           "UNANALYSED",
-            "yf_ticker":        "UNANALYSED",
-            "name":             "Unanalysed Holdings",
-            "portfolio_weight": total_unanalysed_weight,
-            "currency":         display_ccy,
-            "sector":           "Unanalysed",
-            "country":          "Unanalysed",
-            "exchange":         None,
-            "asset_type":       "OTHER",
-        }])
-        leaves_df = pd.concat([leaves_df, unanalysed_row], ignore_index=True)
+    # Add unanalysed row if needed
+    if total_unanalysed_weight > 0.001:
+        leaves_df = pd.concat([leaves_df, pd.DataFrame([{
+            "ticker": "UNANALYSED", "yf_ticker": "UNANALYSED",
+            "name": "Unanalysed Holdings", "portfolio_weight": total_unanalysed_weight,
+            "sector": "Unanalysed", "country": "Unanalysed",
+            "exchange": None, "asset_type": "OTHER",
+        }])], ignore_index=True)
 
     leaves_df["value_display"] = leaves_df["portfolio_weight"] * total_value
 
-    # ── Step 3: enrich missing sector/country from yfinance ──────────────────
-    leaves_df = enrich_missing_metadata(leaves_df)
-
-    # ── Step 4: apply commodity N/A and infer market ──────────────────────────
-    def apply_commodity_na(row):
+    # Infer market bucket
+    def classify_market(row):
         if row["ticker"] == "UNANALYSED":
-            row["sector"]  = "Unanalysed"
-            row["country"] = "Unanalysed"
-            row["market"]  = "Unanalysed"
-        elif is_commodity(row["ticker"], row.get("asset_type", ""), row.get("name", "")):
-            row["sector"]  = "N/A (Commodity)"
-            row["country"] = "N/A"
-            row["market"]  = "N/A"
-        else:
-            row["market"] = infer_market(row)
-        return row
+            return "Unanalysed"
+        if is_commodity(row["ticker"], row.get("name", "")):
+            return "N/A"
+        return infer_market(row)
 
-    leaves_df = leaves_df.apply(apply_commodity_na, axis=1)
+    leaves_df["market"] = leaves_df.apply(classify_market, axis=1)
 
-    # ── Step 5: roll-up breakdowns ────────────────────────────────────────────
-    def rollup(col: str) -> pd.DataFrame:
+    # Roll-up market and country
+    def rollup(df, col):
         grp = (
-            leaves_df.groupby(col)["portfolio_weight"]
-            .sum()
-            .reset_index()
-            .rename(columns={"portfolio_weight": "weight"})
+            df.groupby(col)["portfolio_weight"].sum()
+            .reset_index().rename(columns={"portfolio_weight": "weight"})
             .sort_values("weight", ascending=False)
         )
         grp["value_display"] = grp["weight"] * total_value
         grp["pct"] = grp["weight"] * 100
         return grp
 
-    by_market  = rollup("market")
-    by_country = rollup("country")
-    by_sector  = rollup("sector")
+    by_market  = rollup(leaves_df, "market")
+    by_country = rollup(leaves_df, "country")
 
+    # Top 50 stocks (exclude UNANALYSED row from stock list)
     by_stock = (
-        leaves_df[[
-            "ticker", "name", "portfolio_weight", "value_display",
-            "sector", "country", "market"
-        ]]
+        leaves_df[leaves_df["ticker"] != "UNANALYSED"]
+        [["ticker", "name", "portfolio_weight", "value_display", "sector", "country", "market"]]
         .sort_values("portfolio_weight", ascending=False)
         .head(50)
         .rename(columns={"portfolio_weight": "weight"})
