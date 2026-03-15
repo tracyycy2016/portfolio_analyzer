@@ -62,15 +62,15 @@ EMERGING = {
 }
 
 EXCHANGE_TO_BUCKET = {
-    "NMS": "Developed Market (North America)", "NYQ": "Developed Market (North America)",
-    "NGM": "Developed Market (North America)", "NCM": "Developed Market (North America)",
-    "ASE": "Developed Market (North America)", "PCX": "Developed Market (North America)",
-    "BATS": "Developed Market (North America)", "NYA": "Developed Market (North America)",
-    "ARCX": "Developed Market (North America)", "XNAS": "Developed Market (North America)",
-    "XNYS": "Developed Market (North America)", "NASDAQ": "Developed Market (North America)",
-    "NYSE": "Developed Market (North America)", "TOR": "Developed Market (North America)",
-    "TSX": "Developed Market (North America)", "TSXV": "Developed Market (North America)",
-    "XTSE": "Developed Market (North America)",
+    "NMS": "United States", "NYQ": "United States",
+    "NGM": "United States", "NCM": "United States",
+    "ASE": "United States", "PCX": "United States",
+    "BATS": "United States", "NYA": "United States",
+    "ARCX": "United States", "XNAS": "United States",
+    "XNYS": "United States", "NASDAQ": "United States",
+    "NYSE": "United States", "TOR": "Canada",
+    "TSX": "Canada", "TSXV": "Canada",
+    "XTSE": "Canada",
     "LSE": "Developed Market (Non-North America)", "PAR": "Developed Market (Non-North America)",
     "FRA": "Developed Market (Non-North America)", "AMS": "Developed Market (Non-North America)",
     "STO": "Developed Market (Non-North America)", "MCE": "Developed Market (Non-North America)",
@@ -88,7 +88,7 @@ EXCHANGE_TO_BUCKET = {
 }
 
 SUFFIX_TO_BUCKET = {
-    ".TO": "Developed Market (North America)", ".V": "Developed Market (North America)",
+    ".TO": "Canada", ".V": "Canada",
     ".AX": "Developed Market (Non-North America)", ".T": "Developed Market (Non-North America)",
     ".HK": "Developed Market (Non-North America)", ".KS": "Developed Market (Non-North America)",
     ".L": "Developed Market (Non-North America)", ".DE": "Developed Market (Non-North America)",
@@ -109,8 +109,10 @@ def infer_market(row: pd.Series) -> str:
 
     # Country is the most reliable classifier — a Dutch company listed on NASDAQ
     # is still Non-North America exposure. Check country FIRST.
-    if country in DEVELOPED_NA:
-        return "Developed Market (North America)"
+    if country == "United States":
+        return "United States"
+    if country == "Canada":
+        return "Canada"
     if country in DEVELOPED_NON_NA:
         return "Developed Market (Non-North America)"
     if country in EMERGING:
@@ -126,9 +128,9 @@ def infer_market(row: pd.Series) -> str:
         if yf_t.endswith(suffix):
             return bucket
 
-    # Bare alphabetic ticker with no suffix → assume North America
+    # Bare alphabetic ticker with no suffix → assume United States
     if yf_t and "." not in yf_t and yf_t.isalpha() and len(yf_t) <= 5:
-        return "Developed Market (North America)"
+        return "United States"
 
     return "Other"
 
@@ -394,7 +396,6 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
         )
         .reset_index()
         .sort_values("weight", ascending=False)
-        .head(50)
         .assign(pct=lambda d: d["weight"] * 100)
     )
     by_stock = by_stock_agg
