@@ -487,6 +487,88 @@ def get_top_holdings_funds(yf_ticker: str) -> pd.DataFrame:
         return pd.DataFrame(columns=["ticker", "weight", "name"])
 
 
+# ── ETF market classification from fund description + category ─────────────────
+# yfinance has no country/region breakdown, but fund descriptions and categories
+# reliably identify the geographic scope of an ETF index.
+
+DESCRIPTION_MARKET_MAP = [
+    # Specific index names — checked first (order matters)
+    ("S&P 500",                          {"Developed Market (North America)": 1.0}),
+    ("Standard & Poor's 500",            {"Developed Market (North America)": 1.0}),
+    ("NASDAQ-100",                        {"Developed Market (North America)": 1.0}),
+    ("Russell 2000",                      {"Developed Market (North America)": 1.0}),
+    ("Russell 1000",                      {"Developed Market (North America)": 1.0}),
+    ("TSX Composite",                     {"Developed Market (North America)": 1.0}),
+    ("FTSE Developed All Cap ex North America", 
+                                          {"Developed Market (Non-North America)": 1.0}),
+    ("FTSE Developed All Cap ex U.S",     {"Developed Market (Non-North America)": 1.0}),
+    ("FTSE Developed",                    {"Developed Market (Non-North America)": 1.0}),
+    ("MSCI Emerging Markets Index",       {"Emerging Market": 1.0}),
+    ("MSCI Emerging Markets",             {"Emerging Market": 1.0}),
+    ("MSCI EAFE",                         {"Developed Market (Non-North America)": 1.0}),
+    ("MSCI Intl Quality",                 {"Developed Market (Non-North America)": 1.0}),
+    ("MSCI Intl",                         {"Developed Market (Non-North America)": 1.0}),
+    ("MSCI World",                        {"Developed Market (Non-North America)": 0.70,
+                                           "Developed Market (North America)": 0.30}),
+    ("international developed",           {"Developed Market (Non-North America)": 1.0}),
+    ("Gold Bullion",                      None),   # commodity
+    ("Gold",                              None),
+    ("Silver",                            None),
+    ("Crude Oil",                         None),
+]
+
+CATEGORY_MARKET_MAP = {
+    "Large Blend":               {"Developed Market (North America)": 1.0},
+    "Large Growth":              {"Developed Market (North America)": 1.0},
+    "Large Value":               {"Developed Market (North America)": 1.0},
+    "Mid-Cap Blend":             {"Developed Market (North America)": 1.0},
+    "Mid-Cap Growth":            {"Developed Market (North America)": 1.0},
+    "Small Blend":               {"Developed Market (North America)": 1.0},
+    "Small Growth":              {"Developed Market (North America)": 1.0},
+    "Utilities":                 {"Developed Market (North America)": 1.0},
+    "Health":                    {"Developed Market (North America)": 1.0},
+    "Technology":                {"Developed Market (North America)": 1.0},
+    "Financial":                 {"Developed Market (North America)": 1.0},
+    "Energy":                    {"Developed Market (North America)": 1.0},
+    "Real Estate":               {"Developed Market (North America)": 1.0},
+    "Diversified Emerging Mkts": {"Emerging Market": 1.0},
+    "China Region":              {"Emerging Market": 1.0},
+    "India Equity":              {"Emerging Market": 1.0},
+    "Latin America Stock":       {"Emerging Market": 1.0},
+    "Japan Stock":               {"Developed Market (Non-North America)": 1.0},
+    "Europe Stock":              {"Developed Market (Non-North America)": 1.0},
+    "Pacific/Asia ex-Japan Stk": {"Developed Market (Non-North America)": 1.0},
+    "Commodities Broad Basket":  None,
+    "Precious Metals":           None,
+}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_etf_market_weights(yf_ticker: str) -> Optional[dict]:
+    """
+    Classify an ETF's geographic market exposure using fund description + category.
+    Returns {market_bucket: weight} summing to 1.0, or None (use holdings fallback).
+    Confirmed working for: VFV.TO, VEF.TO, VIU.TO, XLU, IQLT, ZEM.TO, EEM, VOO, VEA.
+    Returns None for mixed/infrastructure ETFs (IGF etc.) → fall back to top holdings.
+    """
+    try:
+        info = yf.Ticker(yf_ticker).info or {}
+        desc = (info.get("longBusinessSummary") or "").lower()
+        category = info.get("category") or ""
+
+        # Try description keywords first (more precise)
+        for keyword, mapping in DESCRIPTION_MARKET_MAP:
+            if keyword.lower() in desc:
+                return mapping  # None means commodity
+
+        # Fall back to fund category
+        cat_mapping = CATEGORY_MARKET_MAP.get(category)
+        return cat_mapping  # may be None for unknown/mixed categories
+    except Exception:
+        return None
+
+
+
 # ── FX rate ───────────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300)
