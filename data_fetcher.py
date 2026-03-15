@@ -186,71 +186,75 @@ def clean_stockanalysis_symbol(raw: str) -> str:
 
 @st.cache_data(ttl=300)
 def get_price_and_meta(yf_ticker: str) -> dict:
-    """Return price and basic metadata for a single ticker via yfinance."""
-    try:
-        t = yf.Ticker(yf_ticker)
-        info = t.info or {}
+    """
+    Return price and basic metadata for a single ticker via yfinance.
+    Each source is tried independently so a failure in one never blocks the others.
+    Priority: fast_info.last_price → info dict → history fallback.
+    """
+    t = yf.Ticker(yf_ticker)
 
-        # fast_info.last_price is the most reliable source — confirmed working
-        # for all CA ETFs (VFV.TO, ZEM.TO, ZGLD.TO) even when info dict is stale.
-        # Use it first, then fall back to info dict fields.
-        price = None
+    # ── 1. fast_info (most reliable, works even when info dict fails) ──────────
+    price = None
+    currency = None
+    asset_type = None
+    name = None
+    fi_exchange = None
+    try:
+        fi = t.fast_info
+        price = (
+            getattr(fi, "last_price", None)
+            or getattr(fi, "regular_market_price", None)
+            or getattr(fi, "previous_close", None)
+        )
+        currency   = getattr(fi, "currency", None)
+        asset_type = getattr(fi, "quote_type", None)
+        fi_exchange = getattr(fi, "exchange", None)
+    except Exception:
+        pass
+
+    # ── 2. info dict (richer metadata: name, sector, country) ─────────────────
+    info = {}
+    try:
+        info = t.info or {}
+    except Exception:
+        pass
+
+    if not price:
+        price = (
+            info.get("currentPrice")
+            or info.get("regularMarketPrice")
+            or info.get("navPrice")
+            or info.get("previousClose")
+            or info.get("regularMarketPreviousClose")
+            or info.get("ask")
+            or info.get("bid")
+        )
+    if not currency:
+        currency = info.get("currency")
+    if not asset_type:
+        asset_type = info.get("quoteType")
+    if not name:
+        name = info.get("longName") or info.get("shortName")
+
+    # ── 3. history fallback (last resort when market is closed / data stale) ───
+    if not price:
         try:
-            fi = t.fast_info
-            price = (
-                getattr(fi, "last_price", None)
-                or getattr(fi, "regular_market_price", None)
-                or getattr(fi, "previous_close", None)
-            )
+            hist = t.history(period="5d")
+            if not hist.empty:
+                price = float(hist["Close"].dropna().iloc[-1])
         except Exception:
             pass
 
-        if not price:
-            price = (
-                info.get("currentPrice")
-                or info.get("regularMarketPrice")
-                or info.get("navPrice")
-                or info.get("previousClose")
-                or info.get("regularMarketPreviousClose")
-                or info.get("ask")
-                or info.get("bid")
-            )
-
-        # Last resort: 5-day history
-        if not price:
-            try:
-                hist = t.history(period="5d")
-                if not hist.empty:
-                    price = float(hist["Close"].dropna().iloc[-1])
-            except Exception:
-                pass
-
-        currency = (info.get("currency") or "USD").upper()
-        name = info.get("longName") or info.get("shortName") or yf_ticker
-        asset_type = info.get("quoteType", "EQUITY").upper()
-
-        return {
-            "ticker": yf_ticker,
-            "name": name,
-            "price": float(price) if price else None,
-            "currency": currency,
-            "asset_type": asset_type,
-            "sector": info.get("sector"),
-            "country": info.get("country"),
-            "exchange": info.get("exchange"),
-        }
-    except Exception as e:
-        return {
-            "ticker": yf_ticker,
-            "name": yf_ticker,
-            "price": None,
-            "currency": "USD",
-            "asset_type": "EQUITY",
-            "sector": None,
-            "country": None,
-            "exchange": None,
-            "error": str(e),
-        }
+    return {
+        "ticker":     yf_ticker,
+        "name":       name or yf_ticker,
+        "price":      float(price) if price else None,
+        "currency":   (currency or "USD").upper(),
+        "asset_type": (asset_type or "EQUITY").upper(),
+        "sector":     info.get("sector"),
+        "country":    info.get("country"),
+        "exchange":   info.get("exchange") or fi_exchange,
+    }
 
 
 # ── ETF holdings ──────────────────────────────────────────────────────────────
