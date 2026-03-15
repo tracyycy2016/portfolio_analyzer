@@ -404,6 +404,89 @@ def _holdings_slickcharts_sp500() -> Optional[pd.DataFrame]:
 # S&P 500 ETFs — use slickcharts for full holdings
 SP500_ETFS = {"VOO", "SPY", "IVV", "SPLG", "SPXL", "RSP", "CSPX"}
 
+
+# ── ETF sector weightings + top holdings via funds_data ───────────────────────
+
+SECTOR_KEY_MAP = {
+    "realestate":             "Real Estate",
+    "consumer_cyclical":      "Consumer Cyclical",
+    "basic_materials":        "Basic Materials",
+    "consumer_defensive":     "Consumer Defensive",
+    "technology":             "Technology",
+    "communication_services": "Communication Services",
+    "financial_services":     "Financial Services",
+    "utilities":              "Utilities",
+    "industrials":            "Industrials",
+    "energy":                 "Energy",
+    "healthcare":             "Healthcare",
+}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_sector_weightings(yf_ticker: str) -> Optional[dict]:
+    """
+    Fetch sector weightings from yfinance funds_data.sector_weightings.
+    Returns {sector_name: weight} summing to 1.0, or None on failure.
+    Confirmed working for: IGF, XLU, IQLT, VOO, VEA, EEM, VFV.TO, ZEM.TO.
+    """
+    try:
+        t = yf.Ticker(yf_ticker)
+        fd = t.funds_data
+        sw = fd.sector_weightings
+        if not sw or not isinstance(sw, dict):
+            return None
+        result = {}
+        for k, v in sw.items():
+            label = SECTOR_KEY_MAP.get(str(k).lower().replace(" ", "_").replace("/", "_"))
+            if label and v and float(v) > 0:
+                result[label] = float(v)
+        if not result:
+            return None
+        total = sum(result.values())
+        return {k: v / total for k, v in result.items()} if total > 0 else None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_top_holdings_funds(yf_ticker: str) -> pd.DataFrame:
+    """
+    Fetch top holdings from yfinance funds_data.top_holdings.
+    Returns DataFrame(ticker, weight, name) with yfinance-compatible tickers.
+
+    Confirmed column structure (live test):
+      Index name: Symbol  (e.g. "NEE", "AENA.MC", "TCL.AX", "2330.TW")
+      Columns: ["Name", "Holding Percent"]
+    """
+    try:
+        t = yf.Ticker(yf_ticker)
+        fd = t.funds_data
+        th = fd.top_holdings
+        if th is None or (hasattr(th, "empty") and th.empty):
+            return pd.DataFrame(columns=["ticker", "weight", "name"])
+        # Reset index so Symbol becomes a column
+        df = th.reset_index()
+        # Use confirmed column names; fall back to positional if names differ
+        if "Symbol" in df.columns and "Holding Percent" in df.columns:
+            sym_col, wt_col, nm_col = "Symbol", "Holding Percent", "Name"
+        else:
+            # Fallback: first object col = ticker, first float col = weight
+            cols = df.columns.tolist()
+            sym_col = next((c for c in cols if df[c].dtype == object), cols[0])
+            wt_col  = next((c for c in cols if pd.api.types.is_float_dtype(df[c])), cols[-1])
+            nm_col  = next((c for c in cols if "name" in c.lower()), sym_col)
+
+        out = pd.DataFrame({
+            "ticker": df[sym_col].astype(str).str.strip().str.upper(),
+            "weight": pd.to_numeric(df[wt_col], errors="coerce").fillna(0),
+            "name":   df[nm_col].astype(str),
+        })
+        out = out[out["weight"] > 0].sort_values("weight", ascending=False)
+        return out.reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame(columns=["ticker", "weight", "name"])
+
+
 # ── FX rate ───────────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300)
