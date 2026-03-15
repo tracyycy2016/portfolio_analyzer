@@ -102,23 +102,33 @@ SUFFIX_TO_BUCKET = {
 
 
 def infer_market(row: pd.Series) -> str:
-    yf_t = str(row.get("yf_ticker") or row.get("ticker") or "")
-    exch = str(row.get("exchange") or "")
+    yf_t    = str(row.get("yf_ticker") or row.get("ticker") or "")
+    exch    = str(row.get("exchange") or "")
     country = str(row.get("country") or "")
-    bucket = EXCHANGE_TO_BUCKET.get(exch.upper())
-    if bucket:
-        return bucket
+
+    # Country is the most reliable classifier — a Dutch company listed on NASDAQ
+    # is still Non-North America exposure. Check country FIRST.
     if country in DEVELOPED_NA:
         return "Developed Market (North America)"
     if country in DEVELOPED_NON_NA:
         return "Developed Market (Non-North America)"
     if country in EMERGING:
         return "Emerging Market"
+
+    # Fall back to exchange code (for stocks with no country metadata)
+    bucket = EXCHANGE_TO_BUCKET.get(exch.upper())
+    if bucket:
+        return bucket
+
+    # Fall back to yfinance ticker suffix
     for suffix, bucket in SUFFIX_TO_BUCKET.items():
         if yf_t.endswith(suffix):
             return bucket
+
+    # Bare alphabetic ticker with no suffix → assume North America
     if yf_t and "." not in yf_t and yf_t.isalpha() and len(yf_t) <= 5:
         return "Developed Market (North America)"
+
     return "Other"
 
 
@@ -223,6 +233,7 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
                 "name": pos["name"], "portfolio_weight": pos_weight,
                 "sector": "N/A (Commodity)", "country": "N/A",
                 "exchange": None, "asset_type": pos["asset_type"],
+                "source_position": pos["ticker"],
             })
             continue
 
@@ -261,6 +272,7 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
                         "country":          leaf_meta.get("country"),
                         "exchange":         leaf_meta.get("exchange"),
                         "asset_type":       leaf_meta.get("asset_type", "EQUITY"),
+                        "source_position":  pos["ticker"],
                     })
             else:
                 # No holdings at all — treat as leaf
@@ -277,20 +289,15 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
                 "name": pos["name"], "portfolio_weight": pos_weight,
                 "sector": meta.get("sector"), "country": meta.get("country"),
                 "exchange": meta.get("exchange"), "asset_type": pos["asset_type"],
+                "source_position": pos["ticker"],
             })
 
     # Collapse duplicates
-    leaves_df = (
-        pd.DataFrame(all_leaves)
-        .groupby("ticker")
-        .agg(
-            name=("name", "first"), yf_ticker=("yf_ticker", "first"),
-            portfolio_weight=("portfolio_weight", "sum"),
-            sector=("sector", "first"), country=("country", "first"),
-            exchange=("exchange", "first"), asset_type=("asset_type", "first"),
-        )
-        .reset_index()
-    )
+    # Keep individual leaf rows (don't collapse by ticker) so source_position is preserved
+    # for the breakdown tables. Collapse only for the aggregated views.
+    leaves_df = pd.DataFrame(all_leaves)
+    if "source_position" not in leaves_df.columns:
+        leaves_df["source_position"] = ""
 
     # Add unanalysed row if needed
     if total_unanalysed_weight > 0.001:
@@ -327,15 +334,26 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
     by_market  = rollup(leaves_df, "market")
     by_country = rollup(leaves_df, "country")
 
-    # Top 50 stocks (exclude UNANALYSED row from stock list)
-    by_stock = (
-        leaves_df[leaves_df["ticker"] != "UNANALYSED"]
-        [["ticker", "name", "portfolio_weight", "value_display", "sector", "country", "market"]]
-        .sort_values("portfolio_weight", ascending=False)
+    # Top 50 stocks — aggregate duplicate tickers across positions, keep source_position
+    stock_df = leaves_df[leaves_df["ticker"] != "UNANALYSED"].copy()
+    # Collapse duplicate tickers (same stock held by multiple ETFs) for aggregate view
+    by_stock_agg = (
+        stock_df.groupby("ticker")
+        .agg(
+            name=("name", "first"),
+            weight=("portfolio_weight", "sum"),
+            value_display=("value_display", "sum"),
+            sector=("sector", "first"),
+            country=("country", "first"),
+            market=("market", "first"),
+            source_position=("source_position", lambda x: ", ".join(sorted(set(x)))),
+        )
+        .reset_index()
+        .sort_values("weight", ascending=False)
         .head(50)
-        .rename(columns={"portfolio_weight": "weight"})
         .assign(pct=lambda d: d["weight"] * 100)
     )
+    by_stock = by_stock_agg
 
     return {
         "positions_detail": positions_df,
