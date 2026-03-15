@@ -223,57 +223,66 @@ def get_etf_holdings(yf_ticker: str) -> pd.DataFrame:
 
 def _holdings_stockanalysis(ticker: str) -> Optional[pd.DataFrame]:
     """
-    Fetch ETF holdings from stockanalysis.com.
-    Confirmed working for US ETFs: IGF, XLU, IQLT, SPY, QQQ, EEM, VEA, etc.
-    Returns up to 25 top holdings (the full free-tier dataset).
+    Fetch ALL ETF holdings from stockanalysis.com by paginating through
+    ?p=annual&column=allHoldings which returns the full holdings list.
+    Falls back to the standard page (top 25) if the full list is unavailable.
     """
-    url = f"https://stockanalysis.com/etf/{ticker.lower()}/holdings/"
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        if r.status_code != 200:
-            return None
+    all_frames = []
 
-        tables = pd.read_html(StringIO(r.text))
-        for tbl in tables:
-            cols_l = [str(c).lower() for c in tbl.columns]
-            has_symbol = any("symbol" in c for c in cols_l)
-            has_weight = any("weight" in c for c in cols_l)
-            if not (has_symbol and has_weight):
+    # First try the full holdings endpoint
+    urls_to_try = [
+        f"https://stockanalysis.com/etf/{ticker.lower()}/holdings/?p=annual&column=allHoldings",
+        f"https://stockanalysis.com/etf/{ticker.lower()}/holdings/",
+    ]
+
+    for url in urls_to_try:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=20)
+            if r.status_code != 200:
                 continue
 
-            sym_col    = next(c for c in tbl.columns if "symbol" in str(c).lower())
-            weight_col = next(c for c in tbl.columns if "weight" in str(c).lower())
-            name_col   = next((c for c in tbl.columns if "name" in str(c).lower()), sym_col)
+            tables = pd.read_html(StringIO(r.text))
+            for tbl in tables:
+                cols_l = [str(c).lower() for c in tbl.columns]
+                has_symbol = any("symbol" in c for c in cols_l)
+                has_weight = any("weight" in c for c in cols_l)
+                if not (has_symbol and has_weight):
+                    continue
 
-            out = tbl[[sym_col, weight_col, name_col]].copy()
-            out.columns = ["raw_ticker", "weight", "name"]
+                sym_col    = next(c for c in tbl.columns if "symbol" in str(c).lower())
+                weight_col = next(c for c in tbl.columns if "weight" in str(c).lower())
+                name_col   = next((c for c in tbl.columns if "name" in str(c).lower()), sym_col)
 
-            # Clean ticker symbols (e.g. 'ASX: TCL' → 'TCL.AX')
-            out["ticker"] = out["raw_ticker"].apply(clean_stockanalysis_symbol)
+                out = tbl[[sym_col, weight_col, name_col]].copy()
+                out.columns = ["raw_ticker", "weight", "name"]
+                out["ticker"] = out["raw_ticker"].apply(clean_stockanalysis_symbol)
 
-            # Parse weight: '5.22%' → 0.0522
-            out["weight"] = (
-                out["weight"].astype(str)
-                .str.replace("%", "").str.replace(",", "").str.strip()
-            )
-            out["weight"] = pd.to_numeric(out["weight"], errors="coerce").fillna(0)
-            if out["weight"].max() > 1.5:
-                out["weight"] /= 100.0
+                out["weight"] = (
+                    out["weight"].astype(str)
+                    .str.replace("%", "").str.replace(",", "").str.strip()
+                )
+                out["weight"] = pd.to_numeric(out["weight"], errors="coerce").fillna(0)
+                if out["weight"].max() > 1.5:
+                    out["weight"] /= 100.0
 
-            # Filter out bad rows
-            out = out[out["weight"] > 0]
-            out = out[out["ticker"].str.match(r"^[A-Z0-9\.\-]+$", na=False)]
-            out = out[~out["ticker"].isin(["", "NAN", "-", "N/A"])]
+                out = out[out["weight"] > 0]
+                out = out[out["ticker"].str.match(r"^[A-Z0-9\.\-]+$", na=False)]
+                out = out[~out["ticker"].isin(["", "NAN", "-", "N/A"])]
 
-            if len(out) >= 1:
-                return out[["ticker", "weight", "name"]].sort_values(
-                    "weight", ascending=False
-                ).reset_index(drop=True)
+                if len(out) >= 1:
+                    all_frames.append(out[["ticker", "weight", "name"]])
+                    break  # found the holdings table on this URL
 
-        return None
+            if all_frames:
+                # Use whichever URL returned more holdings
+                best = max(all_frames, key=len)
+                if len(best) >= 1:
+                    return best.sort_values("weight", ascending=False).reset_index(drop=True)
 
-    except Exception:
-        return None
+        except Exception:
+            continue
+
+    return None
 
 
 # ── FX rate ───────────────────────────────────────────────────────────────────
