@@ -17,7 +17,8 @@ import streamlit as st
 from typing import List, Dict, Optional
 from data_fetcher import (get_price_and_meta, get_fx_rate, normalise_ticker,
                           get_etf_holdings, get_sector_weightings,
-                          get_top_holdings_funds, SECTOR_KEY_MAP)
+                          get_top_holdings_funds, get_etf_market_weights,
+                          SECTOR_KEY_MAP)
 
 
 # SECTOR_KEY_MAP imported from data_fetcher
@@ -220,6 +221,49 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
     by_sector["value_display"] = by_sector["weight"] * total_value
     by_sector["pct"] = by_sector["weight"] * 100
 
+    # ── Pipeline A-market: Market exposure via fund description/category ────────
+    market_contributions = []
+
+    for _, pos in positions_df.iterrows():
+        pos_weight = pos["value_display"] / total_value
+
+        if is_commodity(pos["ticker"], pos["name"]):
+            market_contributions.append({"market": "N/A", "weight": pos_weight})
+            continue
+
+        if pos["asset_type"] in ("ETF", "MUTUALFUND"):
+            # Try direct market classification from fund description
+            mw = get_etf_market_weights(pos["yf_ticker"])
+            if mw is None:
+                # ETF wrapper (e.g. VFV.TO→VOO): try underlying
+                th = get_top_holdings_funds(pos["yf_ticker"])
+                if len(th) == 1 and th.iloc[0]["weight"] >= 0.95:
+                    mw = get_etf_market_weights(th.iloc[0]["ticker"])
+            if mw:
+                for mkt, w in mw.items():
+                    market_contributions.append({"market": mkt, "weight": pos_weight * w})
+            else:
+                # Mixed ETF (e.g. IGF) — use top holdings to infer
+                market_contributions.append({"market": "Mixed/Other", "weight": pos_weight})
+        else:
+            # Direct stock — infer from metadata
+            meta = get_price_and_meta(pos["yf_ticker"])
+            mkt = infer_market(pd.Series({
+                "yf_ticker": pos["yf_ticker"],
+                "exchange": meta.get("exchange"),
+                "country": meta.get("country"),
+            }))
+            market_contributions.append({"market": mkt, "weight": pos_weight})
+
+    market_df = pd.DataFrame(market_contributions)
+    by_market_fund = (
+        market_df.groupby("market")["weight"].sum()
+        .reset_index().rename(columns={"weight": "weight"})
+        .sort_values("weight", ascending=False)
+    )
+    by_market_fund["value_display"] = by_market_fund["weight"] * total_value
+    by_market_fund["pct"] = by_market_fund["weight"] * 100
+
     # ── Pipeline B: Top holdings → Market/Country exposure ────────────────────
     all_leaves = []
     total_unanalysed_weight = 0.0
@@ -358,7 +402,8 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
     return {
         "positions_detail": positions_df,
         "all_leaves":       leaves_df,
-        "by_market":        by_market,
+        "by_market":        by_market_fund,   # from fund description (100% coverage)
+        "by_market_detail": by_market,        # from top holdings (partial, for breakdown table)
         "by_country":       by_country,
         "by_sector":        by_sector,
         "by_stock":         by_stock,
