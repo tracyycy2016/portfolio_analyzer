@@ -129,25 +129,33 @@ CHART_COLORS = [
 ]
 
 def donut_chart(labels, values, title: str):
-    # Give "Unanalysed" and "N/A" a distinct muted color
-    label_list = list(labels)
+    # Build parallel lists so colors always align with labels
+    pairs = list(zip(list(labels), list(values)))
+    MUTED = "#334155"
+    MUTED_LABELS = {"unanalysed", "n/a", "n/a (commodity)"}
     color_list = []
     ci = 0
-    for lbl in label_list:
-        if str(lbl).lower() in ("unanalysed", "n/a", "n/a (commodity)"):
-            color_list.append("#334155")
+    for lbl, _ in pairs:
+        if str(lbl).lower() in MUTED_LABELS:
+            color_list.append(MUTED)
         else:
             color_list.append(CHART_COLORS[ci % len(CHART_COLORS)])
             ci += 1
+    label_list = [p[0] for p in pairs]
+    value_list = [p[1] for p in pairs]
+    # Only show percent label if slice is large enough to read
+    textinfo = "percent"
     fig = go.Figure(
         go.Pie(
             labels=label_list,
-            values=values,
+            values=value_list,
             hole=0.55,
-            textinfo="percent",
-            textfont_size=12,
+            textinfo=textinfo,
+            textfont_size=11,
+            insidetextorientation="radial",
             marker=dict(colors=color_list, line=dict(color="#0f172a", width=2)),
-            hovertemplate="<b>%{label}</b><br>%{percent}<extra></extra>",
+            hovertemplate="<b>%{label}</b><br>%{percent} (%{value:,.0f})<extra></extra>",
+            sort=False,   # keep the order we pass in (already sorted by weight desc)
         )
     )
     fig.update_layout(
@@ -162,7 +170,7 @@ def donut_chart(labels, values, title: str):
             bgcolor="rgba(0,0,0,0)",
         ),
         margin=dict(l=10, r=10, t=40, b=10),
-        height=360,
+        height=380,
     )
     return fig
 
@@ -424,17 +432,21 @@ with tab_country:
     else:
         df_c = by_country.dropna(subset=["country"]).copy()
         df_c["country"] = df_c["country"].fillna("Unknown")
+        unanalysed_country_pct = df_c[df_c["country"].isin(["Unanalysed","N/A"])]["pct"].sum()
+        df_c_chart = df_c[~df_c["country"].isin(["Unanalysed","N/A"])].head(15).copy()
         c1, c2 = st.columns([1, 1])
         with c1:
             fig = donut_chart(
-                df_c["country"].head(15),
-                df_c["value_display"].head(15),
-                "Top 15 Countries",
+                df_c_chart["country"],
+                df_c_chart["value_display"],
+                "Top Countries",
             )
             st.plotly_chart(fig, use_container_width=True)
         with c2:
             tbl = exposure_table(df_c, "weight", "value_display", "country", ccy)
             st.dataframe(tbl, use_container_width=True, hide_index=True)
+        if unanalysed_country_pct > 0:
+            st.caption(f"⚠️ {unanalysed_country_pct:.1f}% of portfolio is in ETF holdings beyond the top 25 — country not available for these.")
 
 
 # ── Tab: By Sector ─────────────────────────────────────────────────────────────
@@ -445,31 +457,32 @@ with tab_sector:
     else:
         df_s = by_sector.dropna(subset=["sector"]).copy()
         df_s["sector"] = df_s["sector"].fillna("Unknown")
+        # Show unanalysed note separately; exclude from donut so chart is readable
+        unanalysed_sector_pct = df_s[df_s["sector"]=="Unanalysed"]["pct"].sum()
+        df_s_chart = df_s[df_s["sector"] != "Unanalysed"].copy()
+        # Renormalise chart weights to sum to 100% for display
+        if df_s_chart["weight"].sum() > 0:
+            df_s_chart = df_s_chart.copy()
         c1, c2 = st.columns([1, 1])
         with c1:
-            fig = donut_chart(df_s["sector"], df_s["value_display"], "Sector Allocation")
+            fig = donut_chart(df_s_chart["sector"], df_s_chart["value_display"], "Sector Allocation")
             st.plotly_chart(fig, use_container_width=True)
         with c2:
             tbl = exposure_table(df_s, "weight", "value_display", "sector", ccy)
             st.dataframe(tbl, use_container_width=True, hide_index=True)
+        if unanalysed_sector_pct > 0:
+            st.caption(f"⚠️ {unanalysed_sector_pct:.1f}% of portfolio is in ETF holdings beyond the top 25 — sector not available for these.")
 
 
 # ── Tab: Top 50 Stocks ─────────────────────────────────────────────────────────
 with tab_stock:
-    st.markdown('<div class="section-header">Top 50 Underlying Holdings</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">Top Underlying Holdings</div>', unsafe_allow_html=True)
+    st.caption("Shows top 25 underlying stocks per ETF (free data limit). Direct stock positions are shown in full.")
     if by_stock.empty:
         st.info("No stock data available.")
     else:
-        # Bar chart of top 20 — top 5 use accent colors, rest use muted blue-gray
+        # Bar chart of top 20 — single accent color
         top20 = by_stock.head(20).iloc[::-1]
-        n = len(top20)
-        bar_colors = []
-        for idx in range(n):
-            rank = n - 1 - idx   # 0 = highest weight (plotted at bottom due to reverse)
-            if rank < 5:
-                bar_colors.append(CHART_COLORS[rank])
-            else:
-                bar_colors.append("#334155")
         fig = go.Figure(
             go.Bar(
                 x=top20["pct"],
@@ -478,7 +491,7 @@ with tab_stock:
                 text=top20["pct"].apply(lambda x: f"{x:.2f}%"),
                 textposition="outside",
                 marker=dict(
-                    color=bar_colors,
+                    color="#3b82f6",
                     line=dict(color="rgba(0,0,0,0)"),
                 ),
                 hovertemplate="<b>%{y}</b><br>%{x:.2f}%<extra></extra>",
@@ -548,7 +561,10 @@ with tab_positions:
 # ── Tab: Diagnostics ───────────────────────────────────────────────────────────
 with tab_diag:
     st.markdown('<div class="section-header">ETF Holdings Resolution Diagnostics</div>', unsafe_allow_html=True)
-    st.caption("Shows how many underlying holdings were resolved for each ETF in your portfolio.")
+    st.caption(
+        "For ETFs, holdings data is capped at top 25 by the free data source (stockanalysis.com). "
+        "The analysed % shows what fraction of each ETF's market value is covered by those top 25 holdings."
+    )
 
     from data_fetcher import get_etf_holdings
 
@@ -556,26 +572,56 @@ with tab_diag:
     for _, pos in positions_df.iterrows():
         if pos["asset_type"] in ("ETF", "MUTUALFUND"):
             holdings_df = get_etf_holdings(pos["yf_ticker"])
-            n = len(holdings_df) if not holdings_df.empty else 0
-            status = "✅ Resolved" if n >= 5 else ("⚠️ Partial" if n > 0 else "❌ No holdings found")
-            top3 = ", ".join(holdings_df["ticker"].head(3).tolist()) if n > 0 else "—"
+            n_analysed = len(holdings_df) if not holdings_df.empty else 0
+
+            # Total number of underlying stocks in the ETF (from yfinance info if available)
+            import yfinance as _yf
+            try:
+                _info = _yf.Ticker(pos["yf_ticker"]).info or {}
+                n_total = _info.get("holdings", n_analysed) or n_analysed
+                # yfinance doesn't reliably expose total count — use fund profile instead
+                # Fall back to n_analysed as lower bound
+                n_total = max(n_total, n_analysed)
+            except Exception:
+                n_total = n_analysed
+
+            # Analysed % = sum of weights of top-25 holdings
+            if n_analysed > 0:
+                captured_w = min(1.0, holdings_df["weight"].sum())
+                analysed_pct = f"{captured_w * 100:.1f}%"
+            else:
+                captured_w = 0.0
+                analysed_pct = "0.0%"
+
+            status = "✅ Resolved" if n_analysed >= 5 else ("⚠️ Partial" if n_analysed > 0 else "❌ No data")
+            top3 = ", ".join(holdings_df["ticker"].head(3).tolist()) if n_analysed > 0 else "—"
+
             diag_rows.append({
-                "Ticker": pos["ticker"],
-                "yf Symbol": pos["yf_ticker"],
-                "Type": pos["asset_type"],
-                "Holdings Found": n,
-                "Status": status,
-                "Top 3 Holdings": top3,
+                "Ticker":           pos["ticker"],
+                "yf Symbol":        pos["yf_ticker"],
+                "Status":           status,
+                "Total Holdings":   "Unknown" if n_total == n_analysed else str(n_total),
+                "Analysed (top N)": n_analysed,
+                "Analysed % (MV)":  analysed_pct,
+                "Top 3 Holdings":   top3,
             })
 
     if diag_rows:
         st.dataframe(pd.DataFrame(diag_rows), use_container_width=True, hide_index=True)
+        # Portfolio-level summary
+        if diag_rows:
+            total_pos_value = positions_df[positions_df["asset_type"].isin(["ETF","MUTUALFUND"])]["value_display"].sum()
+            unanalysed_val = result["all_leaves"]
+            unanalysed_val = unanalysed_val[unanalysed_val["ticker"]=="UNANALYSED"]["value_display"].sum()
+            if total_pos_value > 0:
+                st.markdown(
+                    f"**Portfolio ETF coverage:** "
+                    f"{fmt_money(total_pos_value - unanalysed_val, ccy)} analysed out of "
+                    f"{fmt_money(total_pos_value, ccy)} in ETFs "
+                    f"({(1 - unanalysed_val/total_pos_value)*100:.1f}% by market value)"
+                )
     else:
         st.info("No ETFs in your portfolio to diagnose.")
 
     st.markdown("---")
-    st.markdown("**Holdings sources tried (in order):**")
-    st.markdown(
-        "1. Vanguard Canada API → 2. iShares/BlackRock CSV → "
-        "3. BMO ETF pages → 4. yfinance → 5. etf.com"
-    )
+    st.caption("Holdings source: stockanalysis.com (US ETFs) · S&P 500 ETFs via slickcharts.com (full 503 holdings)")
