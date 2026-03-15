@@ -15,24 +15,12 @@ import pandas as pd
 import yfinance as yf
 import streamlit as st
 from typing import List, Dict, Optional
-from data_fetcher import get_price_and_meta, get_fx_rate, normalise_ticker, get_etf_holdings
+from data_fetcher import (get_price_and_meta, get_fx_rate, normalise_ticker,
+                          get_etf_holdings, get_sector_weightings,
+                          get_top_holdings_funds, SECTOR_KEY_MAP)
 
 
-# ── Sector key normalisation ──────────────────────────────────────────────────
-
-SECTOR_KEY_MAP = {
-    "realestate":             "Real Estate",
-    "consumer_cyclical":      "Consumer Cyclical",
-    "basic_materials":        "Basic Materials",
-    "consumer_defensive":     "Consumer Defensive",
-    "technology":             "Technology",
-    "communication_services": "Communication Services",
-    "financial_services":     "Financial Services",
-    "utilities":              "Utilities",
-    "industrials":            "Industrials",
-    "energy":                 "Energy",
-    "healthcare":             "Healthcare",
-}
+# SECTOR_KEY_MAP imported from data_fetcher
 
 # ── Commodity detection ───────────────────────────────────────────────────────
 
@@ -134,69 +122,7 @@ def infer_market(row: pd.Series) -> str:
     return "Other"
 
 
-# ── Pipeline A: Sector exposure via funds_data.sector_weightings ──────────────
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_sector_weightings(yf_ticker: str) -> Optional[Dict[str, float]]:
-    """
-    Fetch sector weightings from yfinance funds_data.
-    Returns dict of {sector_name: weight} summing to ~1.0, or None.
-    Works for US and CA ETFs (confirmed: IGF, XLU, IQLT, VOO, VEA, EEM, VFV.TO, ZEM.TO).
-    """
-    try:
-        t = yf.Ticker(yf_ticker)
-        fd = t.funds_data
-        sw = fd.sector_weightings
-        if not sw or not isinstance(sw, dict):
-            return None
-        # Normalise keys and filter zeros
-        result = {}
-        for k, v in sw.items():
-            label = SECTOR_KEY_MAP.get(k.lower())
-            if label and v and float(v) > 0:
-                result[label] = float(v)
-        if not result:
-            return None
-        # Normalise to sum to 1.0
-        total = sum(result.values())
-        if total > 0:
-            result = {k: v / total for k, v in result.items()}
-        return result
-    except Exception:
-        return None
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_top_holdings_funds(yf_ticker: str) -> pd.DataFrame:
-    """
-    Fetch top holdings from yfinance funds_data.top_holdings.
-    Returns DataFrame with columns: ticker, weight, name.
-    Tickers are already yfinance-compatible (e.g. ASML.AS, NOVN.SW, 2330.TW).
-    """
-    try:
-        t = yf.Ticker(yf_ticker)
-        fd = t.funds_data
-        th = fd.top_holdings
-        if th is None or th.empty:
-            return pd.DataFrame(columns=["ticker", "weight", "name"])
-        df = th.reset_index()
-        # Columns: Symbol, Name, Holding Percent
-        df.columns = [str(c).strip() for c in df.columns]
-        sym_col  = next((c for c in df.columns if "symbol" in c.lower() or c.lower() == "index"), None)
-        wt_col   = next((c for c in df.columns if "percent" in c.lower() or "weight" in c.lower() or "holding" in c.lower()), None)
-        nm_col   = next((c for c in df.columns if "name" in c.lower()), sym_col)
-        if not sym_col or not wt_col:
-            return pd.DataFrame(columns=["ticker", "weight", "name"])
-        out = pd.DataFrame({
-            "ticker": df[sym_col].astype(str).str.strip().str.upper(),
-            "weight": pd.to_numeric(df[wt_col], errors="coerce").fillna(0),
-            "name":   df[nm_col].astype(str) if nm_col else df[sym_col].astype(str),
-        })
-        out = out[out["weight"] > 0].sort_values("weight", ascending=False)
-        return out.reset_index(drop=True)
-    except Exception:
-        return pd.DataFrame(columns=["ticker", "weight", "name"])
-
+# Sector + holdings functions imported from data_fetcher
 
 # ── Main engine ───────────────────────────────────────────────────────────────
 
