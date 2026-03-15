@@ -230,8 +230,8 @@ with st.sidebar:
             )
         with c3:
             pos["units"] = st.number_input(
-                "Units", value=float(pos.get("units", 0)),
-                min_value=0.0, step=1.0, key=f"units_{i}",
+                "Units", value=int(pos.get("units", 0)),
+                min_value=0, step=1, key=f"units_{i}",
                 label_visibility="collapsed"
             )
         with c4:
@@ -395,8 +395,16 @@ with tab_stock:
     if by_stock.empty:
         st.info("No stock data available.")
     else:
-        # Bar chart of top 20
+        # Bar chart of top 20 — top 5 use accent colors, rest use muted blue-gray
         top20 = by_stock.head(20).iloc[::-1]
+        n = len(top20)
+        bar_colors = []
+        for idx in range(n):
+            rank = n - 1 - idx   # 0 = highest weight (plotted at bottom due to reverse)
+            if rank < 5:
+                bar_colors.append(CHART_COLORS[rank])
+            else:
+                bar_colors.append("#334155")
         fig = go.Figure(
             go.Bar(
                 x=top20["pct"],
@@ -405,7 +413,7 @@ with tab_stock:
                 text=top20["pct"].apply(lambda x: f"{x:.2f}%"),
                 textposition="outside",
                 marker=dict(
-                    color=CHART_COLORS[: len(top20)],
+                    color=bar_colors,
                     line=dict(color="rgba(0,0,0,0)"),
                 ),
                 hovertemplate="<b>%{y}</b><br>%{x:.2f}%<extra></extra>",
@@ -431,9 +439,9 @@ with tab_stock:
         tbl = by_stock.copy()
         tbl["pct"] = tbl["pct"].apply(fmt_pct)
         tbl["value_display"] = tbl["value_display"].apply(lambda x: fmt_money(x, ccy))
-        tbl["sector"] = tbl["sector"].fillna("—")
-        tbl["country"] = tbl["country"].fillna("—")
-        tbl["market"] = tbl["market"].fillna("—")
+        tbl["sector"]  = tbl["sector"].fillna("—").replace("", "—").replace("None", "—")
+        tbl["country"] = tbl["country"].fillna("—").replace("", "—").replace("None", "—")
+        tbl["market"]  = tbl["market"].fillna("—").replace("", "—").replace("None", "—")
         tbl = tbl.rename(
             columns={
                 "ticker": "Ticker",
