@@ -9,96 +9,209 @@ from data_fetcher import get_price_and_meta, get_fx_rate, normalise_ticker
 from etf_resolver import resolve_holdings, aggregate_leaf_holdings
 
 
-# ─── Exchange → Market mapping ────────────────────────────────────────────────
-
-EXCHANGE_TO_MARKET = {
-    # US
-    "NMS": "US", "NYQ": "US", "NGM": "US", "NCM": "US",
-    "ASE": "US", "PCX": "US", "BATS": "US", "CBOE": "US",
-    "NYA": "US", "ARCX": "US", "XNAS": "US", "XNYS": "US",
-    "NASDAQ": "US", "NYSE": "US",
-    # Canada
-    "TOR": "Canada", "TSX": "Canada", "TSXV": "Canada",
-    "XTSE": "Canada", "CVE": "Canada",
-    # Europe
-    "LSE": "Europe", "PAR": "Europe", "FRA": "Europe", "AMS": "Europe",
-    "STO": "Europe", "MCE": "Europe", "MIL": "Europe", "OSL": "Europe",
-    "VIE": "Europe", "ZRH": "Europe", "HEL": "Europe", "LIS": "Europe",
-    "BRU": "Europe", "DUB": "Europe",
-    # Asia-Pacific
-    "TKS": "Japan", "OSA": "Japan",
-    "SHH": "China", "SHZ": "China", "HKG": "Hong Kong",
-    "KSC": "South Korea", "KOE": "South Korea",
-    "TAI": "Taiwan",
-    "NSI": "India", "BSE": "India",
-    "ASX": "Australia",
-    "SGX": "Singapore",
-    # Other
-    "SAO": "Brazil", "BMV": "Mexico",
+# ── Commodity tickers (no sector/country/market data meaningful) ──────────────
+# These are physical commodity ETFs — their "holdings" are commodities, not stocks.
+COMMODITY_TICKERS = {
+    "ZGLD", "ZGLD.TO", "IAU", "GLD", "SLV", "PDBC", "DJP",
+    "USO", "UNG", "BNO", "DBO", "CPER", "PALL", "PPLT",
+    "COMT", "FTGC", "CMDY",
 }
 
-COUNTRY_TO_MARKET = {
-    "United States": "US",
-    "Canada": "Canada",
-    "United Kingdom": "Europe",
-    "Germany": "Europe",
-    "France": "Europe",
-    "Netherlands": "Europe",
-    "Switzerland": "Europe",
-    "Sweden": "Europe",
-    "Denmark": "Europe",
-    "Norway": "Europe",
-    "Finland": "Europe",
-    "Spain": "Europe",
-    "Italy": "Europe",
-    "Belgium": "Europe",
-    "Austria": "Europe",
-    "Portugal": "Europe",
-    "Ireland": "Europe",
-    "Japan": "Japan",
-    "China": "China",
-    "Hong Kong": "Hong Kong",
-    "South Korea": "South Korea",
-    "Taiwan": "Taiwan",
-    "India": "India",
-    "Australia": "Australia",
-    "Singapore": "Singapore",
-    "Brazil": "Brazil",
-    "Mexico": "Mexico",
+
+# ── Market classification ──────────────────────────────────────────────────────
+# New 4-bucket system:
+#   Developed Market (North America)      = US + Canada
+#   Developed Market (Non-North America)  = Europe + Japan + Australia + other DM
+#   Emerging Market                       = China, India, Brazil, EM Asia, etc.
+#   Other / N/A
+
+DEVELOPED_NA = {
+    "United States", "Canada",
+}
+
+DEVELOPED_NON_NA = {
+    "United Kingdom", "Germany", "France", "Netherlands", "Switzerland",
+    "Sweden", "Denmark", "Norway", "Finland", "Spain", "Italy", "Belgium",
+    "Austria", "Portugal", "Ireland", "Luxembourg", "New Zealand",
+    "Japan", "Australia", "Singapore", "Hong Kong", "Israel",
+    "South Korea",   # MSCI classifies Korea as developed
+}
+
+EMERGING = {
+    "China", "India", "Brazil", "Mexico", "Taiwan", "South Africa",
+    "Russia", "Indonesia", "Thailand", "Malaysia", "Philippines",
+    "Vietnam", "Turkey", "Egypt", "Saudi Arabia", "United Arab Emirates",
+    "Qatar", "Kuwait", "Greece", "Czech Republic", "Hungary", "Poland",
+    "Chile", "Colombia", "Peru", "Pakistan",
+}
+
+# Exchange code → market bucket
+EXCHANGE_TO_BUCKET = {
+    # Developed NA
+    "NMS": "Developed Market (North America)",
+    "NYQ": "Developed Market (North America)",
+    "NGM": "Developed Market (North America)",
+    "NCM": "Developed Market (North America)",
+    "ASE": "Developed Market (North America)",
+    "PCX": "Developed Market (North America)",
+    "BATS": "Developed Market (North America)",
+    "CBOE": "Developed Market (North America)",
+    "NYA": "Developed Market (North America)",
+    "ARCX": "Developed Market (North America)",
+    "XNAS": "Developed Market (North America)",
+    "XNYS": "Developed Market (North America)",
+    "NASDAQ": "Developed Market (North America)",
+    "NYSE": "Developed Market (North America)",
+    "TOR": "Developed Market (North America)",
+    "TSX": "Developed Market (North America)",
+    "TSXV": "Developed Market (North America)",
+    "XTSE": "Developed Market (North America)",
+    "CVE": "Developed Market (North America)",
+    # Developed Non-NA
+    "LSE": "Developed Market (Non-North America)",
+    "PAR": "Developed Market (Non-North America)",
+    "FRA": "Developed Market (Non-North America)",
+    "AMS": "Developed Market (Non-North America)",
+    "STO": "Developed Market (Non-North America)",
+    "MCE": "Developed Market (Non-North America)",
+    "MIL": "Developed Market (Non-North America)",
+    "OSL": "Developed Market (Non-North America)",
+    "VIE": "Developed Market (Non-North America)",
+    "ZRH": "Developed Market (Non-North America)",
+    "HEL": "Developed Market (Non-North America)",
+    "LIS": "Developed Market (Non-North America)",
+    "BRU": "Developed Market (Non-North America)",
+    "DUB": "Developed Market (Non-North America)",
+    "CPH": "Developed Market (Non-North America)",
+    "TKS": "Developed Market (Non-North America)",
+    "OSA": "Developed Market (Non-North America)",
+    "ASX": "Developed Market (Non-North America)",
+    "SGX": "Developed Market (Non-North America)",
+    "HKG": "Developed Market (Non-North America)",
+    "KSC": "Developed Market (Non-North America)",
+    "KOE": "Developed Market (Non-North America)",
+    # Emerging
+    "SHH": "Emerging Market",
+    "SHZ": "Emerging Market",
+    "TAI": "Emerging Market",
+    "NSI": "Emerging Market",
+    "BSE": "Emerging Market",
+    "SAO": "Emerging Market",
+    "BMV": "Emerging Market",
+}
+
+# yfinance suffix → market bucket fallback
+SUFFIX_TO_BUCKET = {
+    ".TO": "Developed Market (North America)",
+    ".V":  "Developed Market (North America)",
+    ".AX": "Developed Market (Non-North America)",
+    ".T":  "Developed Market (Non-North America)",
+    ".HK": "Developed Market (Non-North America)",
+    ".KS": "Developed Market (Non-North America)",   # Korea = developed
+    ".TW": "Emerging Market",
+    ".NS": "Emerging Market",
+    ".BO": "Emerging Market",
+    ".SS": "Emerging Market",
+    ".SZ": "Emerging Market",
 }
 
 
 def infer_market(row: pd.Series) -> str:
-    exch = str(row.get("exchange") or "")
+    """Map a leaf holding to one of the 4 market buckets."""
+    yf_t = str(row.get("yf_ticker") or row.get("ticker") or "")
+    exch  = str(row.get("exchange") or "")
     country = str(row.get("country") or "")
-    mkt = EXCHANGE_TO_MARKET.get(exch.upper())
-    if mkt:
-        return mkt
-    mkt = COUNTRY_TO_MARKET.get(country)
-    if mkt:
-        return mkt
-    # Fallback: .TO → Canada
-    if str(row.get("yf_ticker", "")).endswith(".TO"):
-        return "Canada"
+
+    # 1. Exchange code (most reliable when present)
+    bucket = EXCHANGE_TO_BUCKET.get(exch.upper())
+    if bucket:
+        return bucket
+
+    # 2. Country name
+    if country in DEVELOPED_NA:
+        return "Developed Market (North America)"
+    if country in DEVELOPED_NON_NA:
+        return "Developed Market (Non-North America)"
+    if country in EMERGING:
+        return "Emerging Market"
+
+    # 3. yfinance ticker suffix fallback
+    for suffix, bucket in SUFFIX_TO_BUCKET.items():
+        if yf_t.endswith(suffix):
+            return bucket
+
+    # 4. Bare US ticker (no suffix, no country) → assume North America
+    if yf_t and "." not in yf_t and yf_t.isalpha() and len(yf_t) <= 5:
+        return "Developed Market (North America)"
+
     return "Other"
 
 
-# ─── Main engine ──────────────────────────────────────────────────────────────
+def is_commodity(ticker: str, asset_type: str, name: str) -> bool:
+    """Return True if this holding is a commodity/bullion with no equity metadata."""
+    t = ticker.upper().replace(".TO", "").replace(".V", "")
+    if t in COMMODITY_TICKERS:
+        return True
+    name_l = (name or "").lower()
+    commodity_keywords = ["gold", "silver", "oil", "commodity", "bullion",
+                          "platinum", "palladium", "copper", "natural gas",
+                          "energy commodity"]
+    if any(k in name_l for k in commodity_keywords) and asset_type == "ETF":
+        return True
+    return False
+
+
+# ── Metadata enrichment ───────────────────────────────────────────────────────
+
+def enrich_missing_metadata(leaves_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    For rows with missing sector/country/exchange, fetch from yfinance.
+    Batches lookups to avoid redundant calls.
+    Only fetches for non-commodity equity-type holdings.
+    """
+    needs_enrich = leaves_df[
+        (leaves_df["sector"].isna() | leaves_df["country"].isna()) &
+        ~leaves_df.apply(
+            lambda r: is_commodity(r["ticker"], r.get("asset_type",""), r.get("name","")), axis=1
+        )
+    ]["yf_ticker"].unique()
+
+    if len(needs_enrich) == 0:
+        return leaves_df
+
+    enriched = {}
+    for yf_t in needs_enrich:
+        meta = get_price_and_meta(yf_t)
+        if meta.get("sector") or meta.get("country"):
+            enriched[yf_t] = {
+                "sector":   meta.get("sector"),
+                "country":  meta.get("country"),
+                "exchange": meta.get("exchange"),
+            }
+
+    if not enriched:
+        return leaves_df
+
+    def _apply_enrichment(row):
+        yf_t = row["yf_ticker"]
+        if yf_t in enriched:
+            if pd.isna(row["sector"]) or row["sector"] is None:
+                row["sector"] = enriched[yf_t]["sector"]
+            if pd.isna(row["country"]) or row["country"] is None:
+                row["country"] = enriched[yf_t]["country"]
+            if pd.isna(row["exchange"]) or row["exchange"] is None:
+                row["exchange"] = enriched[yf_t]["exchange"]
+        return row
+
+    return leaves_df.apply(_apply_enrichment, axis=1)
+
+
+# ── Main engine ───────────────────────────────────────────────────────────────
 
 def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
     """
     positions: list of { ticker, exchange (US|CA), units }
     display_ccy: 'USD' or 'CAD'
-
-    Returns dict with keys:
-        positions_detail  – per-position breakdown
-        all_leaves        – full resolved leaf holdings DataFrame
-        by_market         – exposure by market
-        by_country        – exposure by country
-        by_sector         – exposure by sector
-        by_stock          – top-50 stocks
-        total_value       – portfolio total in display_ccy
-        errors            – list of error messages
     """
     errors = []
     position_rows = []
@@ -117,7 +230,7 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
     for pos in positions:
         raw_ticker = pos["ticker"].strip().upper()
         exchange = pos["exchange"]
-        units = float(pos["units"])
+        units = int(pos["units"])
 
         yf_ticker = normalise_ticker(raw_ticker, exchange)
         meta = get_price_and_meta(yf_ticker)
@@ -131,20 +244,18 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
         value_native = price * units
         value_display = to_display(value_native, ccy)
 
-        position_rows.append(
-            {
-                "ticker": raw_ticker,
-                "yf_ticker": yf_ticker,
-                "name": meta["name"],
-                "exchange": exchange,
-                "units": units,
-                "price": price,
-                "currency": ccy,
-                "value_native": value_native,
-                "value_display": value_display,
-                "asset_type": meta["asset_type"],
-            }
-        )
+        position_rows.append({
+            "ticker":       raw_ticker,
+            "yf_ticker":    yf_ticker,
+            "name":         meta["name"],
+            "exchange":     exchange,
+            "units":        units,
+            "price":        price,
+            "currency":     ccy,
+            "value_native": value_native,
+            "value_display":value_display,
+            "asset_type":   meta["asset_type"],
+        })
 
     if not position_rows:
         return {"errors": errors}
@@ -156,41 +267,35 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
     all_leaves = []
 
     for _, pos in positions_df.iterrows():
-        pos_weight = pos["value_display"] / total_value  # fraction of portfolio
+        pos_weight = pos["value_display"] / total_value
         leaves = resolve_holdings(pos["yf_ticker"], parent_weight=1.0)
 
         if leaves:
             agg = aggregate_leaf_holdings(leaves)
-            # Scale leaf weights by position's portfolio share
             for _, leaf in agg.iterrows():
-                all_leaves.append(
-                    {
-                        "ticker": leaf["ticker"],
-                        "yf_ticker": leaf["yf_ticker"],
-                        "name": leaf["name"],
-                        "portfolio_weight": pos_weight * leaf["weight"],
-                        "currency": leaf["currency"],
-                        "sector": leaf["sector"],
-                        "country": leaf["country"],
-                        "exchange": leaf["exchange"],
-                        "asset_type": leaf["asset_type"],
-                    }
-                )
+                all_leaves.append({
+                    "ticker":           leaf["ticker"],
+                    "yf_ticker":        leaf["yf_ticker"],
+                    "name":             leaf["name"],
+                    "portfolio_weight": pos_weight * leaf["weight"],
+                    "currency":         leaf["currency"],
+                    "sector":           leaf["sector"],
+                    "country":          leaf["country"],
+                    "exchange":         leaf["exchange"],
+                    "asset_type":       leaf["asset_type"],
+                })
         else:
-            # Treat top-level position itself as the leaf
-            all_leaves.append(
-                {
-                    "ticker": pos["ticker"],
-                    "yf_ticker": pos["yf_ticker"],
-                    "name": pos["name"],
-                    "portfolio_weight": pos_weight,
-                    "currency": pos["currency"],
-                    "sector": None,
-                    "country": None,
-                    "exchange": None,
-                    "asset_type": pos["asset_type"],
-                }
-            )
+            all_leaves.append({
+                "ticker":           pos["ticker"],
+                "yf_ticker":        pos["yf_ticker"],
+                "name":             pos["name"],
+                "portfolio_weight": pos_weight,
+                "currency":         pos["currency"],
+                "sector":           None,
+                "country":          None,
+                "exchange":         None,
+                "asset_type":       pos["asset_type"],
+            })
 
     leaves_df = pd.DataFrame(all_leaves)
 
@@ -216,9 +321,23 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
         leaves_df["portfolio_weight"] = leaves_df["portfolio_weight"] / total_w
 
     leaves_df["value_display"] = leaves_df["portfolio_weight"] * total_value
-    leaves_df["market"] = leaves_df.apply(infer_market, axis=1)
 
-    # ── Step 3: roll-up breakdowns ────────────────────────────────────────────
+    # ── Step 3: enrich missing sector/country from yfinance ──────────────────
+    leaves_df = enrich_missing_metadata(leaves_df)
+
+    # ── Step 4: apply commodity N/A and infer market ──────────────────────────
+    def apply_commodity_na(row):
+        if is_commodity(row["ticker"], row.get("asset_type", ""), row.get("name", "")):
+            row["sector"]  = "N/A (Commodity)"
+            row["country"] = "N/A"
+            row["market"]  = "N/A"
+        else:
+            row["market"] = infer_market(row)
+        return row
+
+    leaves_df = leaves_df.apply(apply_commodity_na, axis=1)
+
+    # ── Step 5: roll-up breakdowns ────────────────────────────────────────────
     def rollup(col: str) -> pd.DataFrame:
         grp = (
             leaves_df.groupby(col)["portfolio_weight"]
@@ -231,12 +350,15 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
         grp["pct"] = grp["weight"] * 100
         return grp
 
-    by_market = rollup("market")
+    by_market  = rollup("market")
     by_country = rollup("country")
-    by_sector = rollup("sector")
+    by_sector  = rollup("sector")
 
     by_stock = (
-        leaves_df[["ticker", "name", "portfolio_weight", "value_display", "sector", "country", "market"]]
+        leaves_df[[
+            "ticker", "name", "portfolio_weight", "value_display",
+            "sector", "country", "market"
+        ]]
         .sort_values("portfolio_weight", ascending=False)
         .head(50)
         .rename(columns={"portfolio_weight": "weight"})
@@ -245,12 +367,12 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
 
     return {
         "positions_detail": positions_df,
-        "all_leaves": leaves_df,
-        "by_market": by_market,
-        "by_country": by_country,
-        "by_sector": by_sector,
-        "by_stock": by_stock,
-        "total_value": total_value,
-        "display_ccy": display_ccy,
-        "errors": errors,
+        "all_leaves":       leaves_df,
+        "by_market":        by_market,
+        "by_country":       by_country,
+        "by_sector":        by_sector,
+        "by_stock":         by_stock,
+        "total_value":      total_value,
+        "display_ccy":      display_ccy,
+        "errors":           errors,
     }
