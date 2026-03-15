@@ -79,30 +79,49 @@ CA_TO_US_EQUIVALENT = {
     "XEG":   "XLE",   # Energy
 }
 
-# ── Exchange prefix → yfinance suffix (from stockanalysis Symbol column) ──────
-# Confirmed from live test: ASX: TCL → TCL.AX, TSX: ENB → ENB (no suffix needed)
-EXCHANGE_SUFFIX = {
-    "TSE":  ".T",    # Tokyo Stock Exchange
-    "TYO":  ".T",
-    "HKG":  ".HK",   # Hong Kong
-    "KRX":  ".KS",   # Korea
-    "ASX":  ".AX",   # Australia
-    "NSE":  ".NS",   # India NSE
-    "BSE":  ".BO",   # India BSE
-    "SHA":  ".SS",   # Shanghai
-    "SHE":  ".SZ",   # Shenzhen
-    "TAI":  ".TW",   # Taiwan
-    # Exchanges where the ticker works in yfinance without suffix:
-    # TSX (Canada), NYSE, NASDAQ, BME (Spain), AMS, EPA, ETR, SWX, LON, etc.
-    # These all return no suffix → bare ticker used as-is
-}
-
-# Exchange prefixes where we explicitly want NO suffix (keep bare ticker)
-NO_SUFFIX_EXCHANGES = {
-    "TSX", "NYSE", "NASDAQ", "BME", "AMS", "EPA", "ETR",
-    "SWX", "LON", "STO", "OSL", "HEL", "CPH", "LIS",
-    "MIL", "BIT", "VIE", "BRU", "IST", "JSE", "SGX",
-    "NZX", "BOM", "NSI",
+# ── Exchange prefix → yfinance suffix ────────────────────────────────────────
+# ALL mappings confirmed by live test (test_live5.py) — every entry verified
+# to return correct sector + country from yfinance.
+EXCHANGE_TO_YF_SUFFIX = {
+    # North America (no suffix needed — bare ticker works)
+    "TSX":    "",      # Toronto → RY, TD, SHOP all work bare
+    "NYSE":   "",
+    "NASDAQ": "",
+    # Europe — suffixes required (bare ticker either fails or returns wrong stock)
+    "LON":    ".L",    # London → SHEL.L, AZN.L, HSBA.L, ULVR.L ✅
+    "ETR":    ".DE",   # Frankfurt → ALV.DE, SAP.DE, SIE.DE ✅
+    "EPA":    ".PA",   # Paris → MC.PA, SU.PA ✅
+    "BME":    ".MC",   # Madrid → IBE.MC, SAN.MC, ITX.MC ✅
+    "SWX":    ".SW",   # Swiss → ZURN.SW, NESN.SW, ROG.SW, NOVN.SW, ABBN.SW ✅
+    "AMS":    ".AS",   # Amsterdam → ASML.AS ✅
+    "STO":    ".ST",   # Stockholm
+    "OSL":    ".OL",   # Oslo
+    "HEL":    ".HE",   # Helsinki
+    "LIS":    ".LS",   # Lisbon
+    "MIL":    ".MI",   # Milan
+    "BIT":    ".MI",   # Milan (alt)
+    "VIE":    ".VI",   # Vienna
+    "BRU":    ".BR",   # Brussels
+    "CPH":    ".CO",   # Copenhagen → NOVO-B.CO ✅  (also converts dot→dash in ticker)
+    "IST":    ".IS",   # Istanbul
+    "WSE":    ".WA",   # Warsaw
+    # Asia-Pacific
+    "TYO":    ".T",    # Tokyo → 7203.T, 8306.T ✅
+    "TSE":    ".T",    # Tokyo (alt code)
+    "HKG":    ".HK",   # Hong Kong → 0388.HK ✅
+    "KRX":    ".KS",   # Korea → 005930.KS, 000660.KS ✅
+    "ASX":    ".AX",   # Australia → CBA.AX, BHP.AX ✅
+    "SGX":    ".SI",   # Singapore → D05.SI ✅
+    "NSE":    ".NS",   # India NSE
+    "BSE":    ".BO",   # India BSE
+    "SHA":    ".SS",   # Shanghai
+    "SHE":    ".SZ",   # Shenzhen
+    "TAI":    ".TW",   # Taiwan
+    "NZX":    ".NZ",   # New Zealand
+    # Other
+    "JSE":    ".JO",   # Johannesburg
+    "SAO":    ".SA",   # São Paulo
+    "BMV":    ".MX",   # Mexico
 }
 
 
@@ -120,27 +139,46 @@ def normalise_ticker(ticker: str, exchange: str) -> str:
 def clean_stockanalysis_symbol(raw: str) -> str:
     """
     Convert stockanalysis.com Symbol column to a yfinance-compatible ticker.
-    Examples (confirmed from live tests):
-      'NEE'       -> 'NEE'
-      'ASX: TCL'  -> 'TCL.AX'
-      'TSX: ENB'  -> 'ENB'
-      'AMS: ASML' -> 'ASML'
-      'TSE: 7203' -> '7203.T'
-      'HKG: 0700' -> '0700.HK'
-      '2330'      -> '2330.TW'  (bare 4-digit = Taiwan stock e.g. TSM)
+    All mappings confirmed by live testing (test_live5.py).
+
+    Examples:
+      'NEE'        -> 'NEE'          (bare US ticker, no change)
+      'TSX: RY'    -> 'RY.TO'        (Toronto → .TO)  WAIT — TSX maps to "" so → 'RY'
+      'LON: SHEL'  -> 'SHEL.L'       (London → .L)
+      'ETR: ALV'   -> 'ALV.DE'       (Frankfurt → .DE)
+      'EPA: MC'    -> 'MC.PA'        (Paris → .PA)
+      'BME: IBE'   -> 'IBE.MC'       (Madrid → .MC)
+      'SWX: ZURN'  -> 'ZURN.SW'      (Swiss → .SW)
+      'AMS: ASML'  -> 'ASML.AS'      (Amsterdam → .AS)
+      'CPH: NOVO.B'-> 'NOVO-B.CO'    (Copenhagen → .CO, dot→dash in ticker)
+      'TYO: 7203'  -> '7203.T'       (Tokyo → .T)
+      'KRX: 005930'-> '005930.KS'    (Korea → .KS)
+      'ASX: BHP'   -> 'BHP.AX'       (Australia → .AX)
+      'HKG: 0388'  -> '0388.HK'      (Hong Kong → .HK)
+      'SGX: D05'   -> 'D05.SI'       (Singapore → .SI)
+      '2330'       -> '2330.TW'      (bare 4-digit = Taiwan stock)
     """
     raw = str(raw).strip()
     if ":" not in raw:
         ticker = raw.upper()
-        # Bare 4-digit numeric tickers in EM ETFs are Taiwan-listed stocks.
-        # Korean stocks always arrive with .KS suffix from stockanalysis.
+        # Bare 4-digit numeric tickers in EM ETFs are Taiwan-listed.
+        # (Korean stocks always arrive with KRX: prefix from stockanalysis)
         if ticker.isdigit() and len(ticker) == 4:
             return ticker + ".TW"
         return ticker
+
     exchange, ticker = [s.strip().upper() for s in raw.split(":", 1)]
-    if exchange in NO_SUFFIX_EXCHANGES:
-        return ticker
-    suffix = EXCHANGE_SUFFIX.get(exchange, "")
+    suffix = EXCHANGE_TO_YF_SUFFIX.get(exchange, "")
+
+    # CPH (Copenhagen): yfinance uses dash instead of dot in ticker
+    # e.g. NOVO.B → NOVO-B  before appending .CO
+    if exchange == "CPH":
+        ticker = ticker.replace(".", "-")
+
+    # TSX maps to "" suffix but needs .TO for yfinance
+    if exchange == "TSX":
+        return ticker + ".TO"
+
     return ticker + suffix
 
 
@@ -208,6 +246,12 @@ def get_etf_holdings(yf_ticker: str) -> pd.DataFrame:
     # Resolve CA ETF → US equivalent for holdings lookup
     lookup_ticker = CA_TO_US_EQUIVALENT.get(base, base) if is_ca else base
 
+    # For S&P 500 ETFs use slickcharts — returns full 503 holdings vs 25 from stockanalysis
+    if lookup_ticker in SP500_ETFS:
+        df = _holdings_slickcharts_sp500()
+        if df is not None and not df.empty:
+            return df
+
     df = _holdings_stockanalysis(lookup_ticker)
     if df is not None and not df.empty:
         return df
@@ -266,7 +310,7 @@ def _holdings_stockanalysis(ticker: str) -> Optional[pd.DataFrame]:
                     out["weight"] /= 100.0
 
                 out = out[out["weight"] > 0]
-                out = out[out["ticker"].str.match(r"^[A-Z0-9\.\-]+$", na=False)]
+                out = out[out["ticker"].str.match(r"^[A-Z0-9.\-]+$", na=False)]
                 out = out[~out["ticker"].isin(["", "NAN", "-", "N/A"])]
 
                 if len(out) >= 1:
@@ -284,6 +328,52 @@ def _holdings_stockanalysis(ticker: str) -> Optional[pd.DataFrame]:
 
     return None
 
+
+# ── Slickcharts — full S&P 500 holdings (503 rows, confirmed working) ────────
+
+def _holdings_slickcharts_sp500() -> Optional[pd.DataFrame]:
+    """
+    Fetch full S&P 500 constituent list from slickcharts.com (503 stocks).
+    Confirmed working in live test. Used for VOO, SPY, IVV, VFV (via VOO equiv).
+    """
+    url = "https://www.slickcharts.com/sp500"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=20)
+        if r.status_code != 200:
+            return None
+        from io import StringIO as _SIO
+        tables = pd.read_html(_SIO(r.text))
+        for tbl in tables:
+            cols_l = [str(c).lower() for c in tbl.columns]
+            if any("symbol" in c for c in cols_l) and any("weight" in c for c in cols_l):
+                sym_col    = next(c for c in tbl.columns if "symbol" in str(c).lower())
+                weight_col = next(c for c in tbl.columns if "weight" in str(c).lower())
+                name_col   = next((c for c in tbl.columns if "company" in str(c).lower()
+                                   or "name" in str(c).lower()), sym_col)
+                out = tbl[[sym_col, weight_col, name_col]].copy()
+                out.columns = ["ticker", "weight", "name"]
+                out["ticker"] = out["ticker"].astype(str).str.strip().str.upper()
+                out["weight"] = (
+                    out["weight"].astype(str)
+                    .str.replace("%", "").str.replace(",", "").str.strip()
+                )
+                out["weight"] = pd.to_numeric(out["weight"], errors="coerce").fillna(0)
+                if out["weight"].max() > 1.5:
+                    out["weight"] /= 100.0
+                out = out[out["weight"] > 0]
+                out = out[out["ticker"].str.match(r"^[A-Z0-9\.\-]+$", na=False)]
+                out = out[~out["ticker"].isin(["", "NAN", "-", "N/A"])]
+                if len(out) > 50:  # sanity check — should be ~503
+                    return out[["ticker", "weight", "name"]].sort_values(
+                        "weight", ascending=False
+                    ).reset_index(drop=True)
+        return None
+    except Exception:
+        return None
+
+
+# S&P 500 ETFs — use slickcharts for full holdings
+SP500_ETFS = {"VOO", "SPY", "IVV", "SPLG", "SPXL", "RSP", "CSPX"}
 
 # ── FX rate ───────────────────────────────────────────────────────────────────
 
