@@ -421,7 +421,7 @@ with tab_mkt:
             st.dataframe(tbl, use_container_width=True, hide_index=True)
         unanalysed_pct = by_market[by_market["market"]=="Unanalysed"]["pct"].sum()
         if unanalysed_pct > 0:
-            st.caption(f"⚠️ {unanalysed_pct:.1f}% of portfolio is in ETF holdings beyond the top 25, which cannot be classified by free data sources.")
+            st.caption(f"⚠️ {unanalysed_pct:.1f}% of portfolio is in ETF holdings beyond the analysed top holdings — market classification not available for these.")
 
 
 # ── Tab: By Country ────────────────────────────────────────────────────────────
@@ -446,7 +446,7 @@ with tab_country:
             tbl = exposure_table(df_c, "weight", "value_display", "country", ccy)
             st.dataframe(tbl, use_container_width=True, hide_index=True)
         if unanalysed_country_pct > 0:
-            st.caption(f"⚠️ {unanalysed_country_pct:.1f}% of portfolio is in ETF holdings beyond the top 25 — country not available for these.")
+            st.caption(f"⚠️ {unanalysed_country_pct:.1f}% of portfolio is in ETF holdings beyond the analysed top holdings — country not available for these.")
 
 
 # ── Tab: By Sector ─────────────────────────────────────────────────────────────
@@ -470,7 +470,7 @@ with tab_sector:
 # ── Tab: Top 50 Stocks ─────────────────────────────────────────────────────────
 with tab_stock:
     st.markdown('<div class="section-header">Top Underlying Holdings</div>', unsafe_allow_html=True)
-    st.caption("Shows top 25 underlying stocks per ETF (free data limit). Direct stock positions are shown in full.")
+    st.caption("Shows top 10 underlying stocks per ETF from fund profile data (yfinance). Direct stock positions are shown in full.")
     if by_stock.empty:
         st.info("No stock data available.")
     else:
@@ -555,66 +555,95 @@ with tab_positions:
 with tab_diag:
     st.markdown('<div class="section-header">ETF Holdings Resolution Diagnostics</div>', unsafe_allow_html=True)
     st.caption(
-        "For ETFs, holdings data is capped at top 25 by the free data source (stockanalysis.com). "
-        "The analysed % shows what fraction of each ETF's market value is covered by those top 25 holdings."
+        "Sector exposure uses yfinance fund profile data (100% coverage). "
+        "Top holdings and market/country exposure use the top 10 holdings from fund profiles. "
+        "Analysed % = fraction of ETF's index weight covered by those top 10 holdings."
     )
 
-    from data_fetcher import get_etf_holdings
+    import yfinance as _yf
+    from data_fetcher import CA_TO_US_EQUIVALENT
+    from portfolio import get_top_holdings_funds
+
+    # Known total holding counts per ETF (from fund documentation)
+    KNOWN_TOTAL_HOLDINGS = {
+        "VOO": 503, "SPY": 503, "IVV": 503, "VFV": 503, "VFV.TO": 503,
+        "VEA": 3957, "VEF": 3957, "VEF.TO": 3957,
+        "VIU": 3450, "VIU.TO": 3450,
+        "EEM": 1200, "ZEM": 1200, "ZEM.TO": 1200,
+        "IGF": 75, "XLU": 29, "IQLT": 300,
+        "VCN": 180, "VCN.TO": 180, "XIC": 240, "XIC.TO": 240,
+        "QQQ": 101, "IWM": 2000, "AGG": 11000,
+    }
 
     diag_rows = []
     for _, pos in positions_df.iterrows():
         if pos["asset_type"] in ("ETF", "MUTUALFUND"):
-            holdings_df = get_etf_holdings(pos["yf_ticker"])
-            n_analysed = len(holdings_df) if not holdings_df.empty else 0
+            base = pos["ticker"].upper()
+            yf_sym = pos["yf_ticker"]
 
-            # Total number of underlying stocks in the ETF (from yfinance info if available)
-            import yfinance as _yf
-            try:
-                _info = _yf.Ticker(pos["yf_ticker"]).info or {}
-                n_total = _info.get("holdings", n_analysed) or n_analysed
-                # yfinance doesn't reliably expose total count — use fund profile instead
-                # Fall back to n_analysed as lower bound
-                n_total = max(n_total, n_analysed)
-            except Exception:
-                n_total = n_analysed
+            # Determine equivalent ETF used for holdings lookup
+            ca_equiv = CA_TO_US_EQUIVALENT.get(base)
+            lookup_sym = ca_equiv if ca_equiv else base
+            equiv_display = f"{ca_equiv} (via CA→US map)" if ca_equiv and ca_equiv != base else "—"
 
-            # Analysed % = sum of weights of top-25 holdings
+            # Get top holdings via funds_data
+            th = get_top_holdings_funds(yf_sym)
+            # Handle ETF-of-ETF (e.g. VFV.TO → top_holdings is just VOO 100%)
+            if len(th) == 1 and th.iloc[0]["weight"] >= 0.95:
+                underlying = th.iloc[0]["ticker"]
+                equiv_display = f"{underlying} (ETF wrapper)"
+                th = get_top_holdings_funds(underlying)
+
+            n_analysed = len(th) if not th.empty else 0
+
+            # Total holdings from lookup table or yfinance
+            n_total = KNOWN_TOTAL_HOLDINGS.get(base) or KNOWN_TOTAL_HOLDINGS.get(yf_sym)
+            if not n_total:
+                # Try yfinance fund overview
+                try:
+                    _info = _yf.Ticker(yf_sym).info or {}
+                    # Some ETFs expose this
+                    n_total = _info.get("holdings") or _info.get("totalHoldings")
+                except Exception:
+                    pass
+            n_total_display = str(n_total) if n_total else "—"
+
+            # Analysed % = sum of weights of analysed holdings
             if n_analysed > 0:
-                captured_w = min(1.0, holdings_df["weight"].sum())
+                captured_w = min(1.0, th["weight"].sum())
                 analysed_pct = f"{captured_w * 100:.1f}%"
             else:
                 captured_w = 0.0
                 analysed_pct = "0.0%"
 
             status = "✅ Resolved" if n_analysed >= 5 else ("⚠️ Partial" if n_analysed > 0 else "❌ No data")
-            top3 = ", ".join(holdings_df["ticker"].head(3).tolist()) if n_analysed > 0 else "—"
+            top3 = ", ".join(th["ticker"].head(3).tolist()) if n_analysed > 0 else "—"
 
             diag_rows.append({
-                "Ticker":           pos["ticker"],
-                "yf Symbol":        pos["yf_ticker"],
-                "Status":           status,
-                "Total Holdings":   "Unknown" if n_total == n_analysed else str(n_total),
-                "Analysed (top N)": n_analysed,
-                "Analysed % (MV)":  analysed_pct,
-                "Top 3 Holdings":   top3,
+                "Ticker":            pos["ticker"],
+                "Equivalent Used":   equiv_display,
+                "Status":            status,
+                "Total Holdings":    n_total_display,
+                "Analysed (top N)":  n_analysed,
+                "Analysed % (MV)":   analysed_pct,
+                "Top 3 Holdings":    top3,
             })
 
     if diag_rows:
         st.dataframe(pd.DataFrame(diag_rows), use_container_width=True, hide_index=True)
-        # Portfolio-level summary
-        if diag_rows:
-            total_pos_value = positions_df[positions_df["asset_type"].isin(["ETF","MUTUALFUND"])]["value_display"].sum()
-            unanalysed_val = result["all_leaves"]
-            unanalysed_val = unanalysed_val[unanalysed_val["ticker"]=="UNANALYSED"]["value_display"].sum()
-            if total_pos_value > 0:
-                st.markdown(
-                    f"**Portfolio ETF coverage:** "
-                    f"{fmt_money(total_pos_value - unanalysed_val, ccy)} analysed out of "
-                    f"{fmt_money(total_pos_value, ccy)} in ETFs "
-                    f"({(1 - unanalysed_val/total_pos_value)*100:.1f}% by market value)"
-                )
+        total_pos_value = positions_df[positions_df["asset_type"].isin(["ETF","MUTUALFUND"])]["value_display"].sum()
+        unanalysed_val = result["all_leaves"]
+        unanalysed_val = unanalysed_val[unanalysed_val["ticker"]=="UNANALYSED"]["value_display"].sum()
+        if total_pos_value > 0:
+            st.markdown(
+                f"**Portfolio ETF top-holdings coverage:** "
+                f"{fmt_money(total_pos_value - unanalysed_val, ccy)} analysed out of "
+                f"{fmt_money(total_pos_value, ccy)} in ETFs "
+                f"({(1 - unanalysed_val/total_pos_value)*100:.1f}% by market value). "
+                f"Sector exposure uses full fund profiles — 100% coverage regardless."
+            )
     else:
         st.info("No ETFs in your portfolio to diagnose.")
 
     st.markdown("---")
-    st.caption("Holdings source: stockanalysis.com (US ETFs) · S&P 500 ETFs via slickcharts.com (full 503 holdings)")
+    st.caption("Sector data: yfinance funds_data.sector_weightings · Holdings: yfinance funds_data.top_holdings · Fallback: stockanalysis.com")
