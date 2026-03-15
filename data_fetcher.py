@@ -191,14 +191,39 @@ def get_price_and_meta(yf_ticker: str) -> dict:
         t = yf.Ticker(yf_ticker)
         info = t.info or {}
 
-        price = (
-            info.get("currentPrice")
-            or info.get("regularMarketPrice")
-            or info.get("navPrice")
-        )
-        if not price:
+        # fast_info.last_price is the most reliable source — confirmed working
+        # for all CA ETFs (VFV.TO, ZEM.TO, ZGLD.TO) even when info dict is stale.
+        # Use it first, then fall back to info dict fields.
+        price = None
+        try:
             fi = t.fast_info
-            price = getattr(fi, "last_price", None)
+            price = (
+                getattr(fi, "last_price", None)
+                or getattr(fi, "regular_market_price", None)
+                or getattr(fi, "previous_close", None)
+            )
+        except Exception:
+            pass
+
+        if not price:
+            price = (
+                info.get("currentPrice")
+                or info.get("regularMarketPrice")
+                or info.get("navPrice")
+                or info.get("previousClose")
+                or info.get("regularMarketPreviousClose")
+                or info.get("ask")
+                or info.get("bid")
+            )
+
+        # Last resort: 5-day history
+        if not price:
+            try:
+                hist = t.history(period="5d")
+                if not hist.empty:
+                    price = float(hist["Close"].dropna().iloc[-1])
+            except Exception:
+                pass
 
         currency = (info.get("currency") or "USD").upper()
         name = info.get("longName") or info.get("shortName") or yf_ticker
