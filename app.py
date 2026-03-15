@@ -331,8 +331,8 @@ for col, (label, val) in zip(m_cols, metrics):
 
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab_mkt, tab_country, tab_sector, tab_stock, tab_positions = st.tabs(
-    ["🌍 By Market", "🗺 By Country", "🏭 By Sector", "📈 Top 50 Stocks", "💼 My Positions"]
+tab_mkt, tab_country, tab_sector, tab_stock, tab_positions, tab_diag = st.tabs(
+    ["🌍 By Market", "🗺 By Country", "🏭 By Sector", "📈 Top 50 Stocks", "💼 My Positions", "🔬 Diagnostics"]
 )
 
 
@@ -470,3 +470,39 @@ with tab_positions:
         }
     )[["Ticker", "Name", "Listed", "Units", "Price", "Type", f"Value ({ccy})", "Portfolio %"]]
     st.dataframe(pos_display.reset_index(drop=True), use_container_width=True, hide_index=True)
+
+
+# ── Tab: Diagnostics ───────────────────────────────────────────────────────────
+with tab_diag:
+    st.markdown('<div class="section-header">ETF Holdings Resolution Diagnostics</div>', unsafe_allow_html=True)
+    st.caption("Shows how many underlying holdings were resolved for each ETF in your portfolio.")
+
+    from data_fetcher import get_etf_holdings
+
+    diag_rows = []
+    for _, pos in positions_df.iterrows():
+        if pos["asset_type"] in ("ETF", "MUTUALFUND"):
+            holdings_df = get_etf_holdings(pos["yf_ticker"])
+            n = len(holdings_df) if not holdings_df.empty else 0
+            status = "✅ Resolved" if n >= 5 else ("⚠️ Partial" if n > 0 else "❌ No holdings found")
+            top3 = ", ".join(holdings_df["ticker"].head(3).tolist()) if n > 0 else "—"
+            diag_rows.append({
+                "Ticker": pos["ticker"],
+                "yf Symbol": pos["yf_ticker"],
+                "Type": pos["asset_type"],
+                "Holdings Found": n,
+                "Status": status,
+                "Top 3 Holdings": top3,
+            })
+
+    if diag_rows:
+        st.dataframe(pd.DataFrame(diag_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("No ETFs in your portfolio to diagnose.")
+
+    st.markdown("---")
+    st.markdown("**Holdings sources tried (in order):**")
+    st.markdown(
+        "1. Vanguard Canada API → 2. iShares/BlackRock CSV → "
+        "3. BMO ETF pages → 4. yfinance → 5. etf.com"
+    )
