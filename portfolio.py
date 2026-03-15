@@ -264,7 +264,9 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
     total_value = positions_df["value_display"].sum()
 
     # ── Step 2: resolve every position to leaf holdings ───────────────────────
+    from data_fetcher import get_etf_holdings as _get_holdings
     all_leaves = []
+    total_unanalysed_weight = 0.0  # accumulate unanalysed portfolio weight
 
     for _, pos in positions_df.iterrows():
         pos_weight = pos["value_display"] / total_value
@@ -272,12 +274,31 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
 
         if leaves:
             agg = aggregate_leaf_holdings(leaves)
+
+            # Check what fraction of the ETF holdings weight we actually captured.
+            # get_etf_holdings may only return top-25 whose weights sum to e.g. 0.55.
+            # The remaining 0.45 is unanalysed.
+            if pos["asset_type"] in ("ETF", "MUTUALFUND"):
+                raw_holdings = _get_holdings(pos["yf_ticker"])
+                if not raw_holdings.empty:
+                    captured_fraction = min(1.0, raw_holdings["weight"].sum())
+                    unanalysed_fraction = max(0.0, 1.0 - captured_fraction)
+                    total_unanalysed_weight += pos_weight * unanalysed_fraction
+                    # Scale leaf weights so resolved + unanalysed = pos_weight exactly.
+                    # etf_resolver normalises internal weights to 1.0, so we scale them
+                    # back to the captured_fraction of the position.
+                    leaf_scale = captured_fraction
+                else:
+                    leaf_scale = 1.0
+            else:
+                leaf_scale = 1.0
+
             for _, leaf in agg.iterrows():
                 all_leaves.append({
                     "ticker":           leaf["ticker"],
                     "yf_ticker":        leaf["yf_ticker"],
                     "name":             leaf["name"],
-                    "portfolio_weight": pos_weight * leaf["weight"],
+                    "portfolio_weight": pos_weight * leaf["weight"] * leaf_scale,
                     "currency":         leaf["currency"],
                     "sector":           leaf["sector"],
                     "country":          leaf["country"],
@@ -315,10 +336,22 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
         .reset_index()
     )
 
-    # Normalise weights to sum to 1
-    total_w = leaves_df["portfolio_weight"].sum()
-    if total_w > 0:
-        leaves_df["portfolio_weight"] = leaves_df["portfolio_weight"] / total_w
+    # Add "Unanalysed" row for ETF holdings beyond top-25 that were not captured.
+    # total_unanalysed_weight was accumulated in Step 2 based on how much of each
+    # ETF's holdings weight was NOT returned by the data source.
+    if total_unanalysed_weight > 0.001:  # more than 0.1% unanalysed
+        unanalysed_row = pd.DataFrame([{
+            "ticker":           "UNANALYSED",
+            "yf_ticker":        "UNANALYSED",
+            "name":             "Unanalysed Holdings",
+            "portfolio_weight": total_unanalysed_weight,
+            "currency":         display_ccy,
+            "sector":           "Unanalysed",
+            "country":          "Unanalysed",
+            "exchange":         None,
+            "asset_type":       "OTHER",
+        }])
+        leaves_df = pd.concat([leaves_df, unanalysed_row], ignore_index=True)
 
     leaves_df["value_display"] = leaves_df["portfolio_weight"] * total_value
 
@@ -327,7 +360,11 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
 
     # ── Step 4: apply commodity N/A and infer market ──────────────────────────
     def apply_commodity_na(row):
-        if is_commodity(row["ticker"], row.get("asset_type", ""), row.get("name", "")):
+        if row["ticker"] == "UNANALYSED":
+            row["sector"]  = "Unanalysed"
+            row["country"] = "Unanalysed"
+            row["market"]  = "Unanalysed"
+        elif is_commodity(row["ticker"], row.get("asset_type", ""), row.get("name", "")):
             row["sector"]  = "N/A (Commodity)"
             row["country"] = "N/A"
             row["market"]  = "N/A"
