@@ -125,14 +125,24 @@ CHART_COLORS = [
 ]
 
 def donut_chart(labels, values, title: str):
+    # Give "Unanalysed" and "N/A" a distinct muted color
+    label_list = list(labels)
+    color_list = []
+    ci = 0
+    for lbl in label_list:
+        if str(lbl).lower() in ("unanalysed", "n/a", "n/a (commodity)"):
+            color_list.append("#334155")
+        else:
+            color_list.append(CHART_COLORS[ci % len(CHART_COLORS)])
+            ci += 1
     fig = go.Figure(
         go.Pie(
-            labels=labels,
+            labels=label_list,
             values=values,
             hole=0.55,
             textinfo="percent",
             textfont_size=12,
-            marker=dict(colors=CHART_COLORS, line=dict(color="#0f172a", width=2)),
+            marker=dict(colors=color_list, line=dict(color="#0f172a", width=2)),
             hovertemplate="<b>%{label}</b><br>%{percent}<extra></extra>",
         )
     )
@@ -203,10 +213,46 @@ with st.sidebar:
     st.markdown("### Add Positions")
     st.caption("Enter ticker, listing exchange, and number of units.")
 
+    # ── CSV upload ──────────────────────────────────────────────────────────
+    with st.expander("📂 Upload CSV to pre-populate", expanded=False):
+        st.caption(
+            "CSV format: `ticker,exchange,units`  "
+            "(exchange must be US or CA)"
+        )
+        uploaded = st.file_uploader(
+            "Choose CSV file", type="csv",
+            label_visibility="collapsed", key="csv_upload"
+        )
+        if uploaded is not None:
+            try:
+                import io as _io
+                df_csv = pd.read_csv(_io.BytesIO(uploaded.read()))
+                df_csv.columns = [c.strip().lower() for c in df_csv.columns]
+                required = {"ticker", "exchange", "units"}
+                if required.issubset(set(df_csv.columns)):
+                    new_positions = []
+                    for _, row in df_csv.iterrows():
+                        t = str(row["ticker"]).strip().upper()
+                        e = str(row["exchange"]).strip().upper()
+                        u = int(float(str(row["units"]).strip()))
+                        if t and e in ("US", "CA") and u > 0:
+                            new_positions.append({"ticker": t, "exchange": e, "units": u})
+                    if new_positions:
+                        st.session_state.positions = new_positions
+                        st.success(f"Loaded {len(new_positions)} positions from CSV.")
+                        st.rerun()
+                    else:
+                        st.error("No valid rows found. Check ticker, exchange (US/CA), and units.")
+                else:
+                    missing = required - set(df_csv.columns)
+                    st.error(f"Missing columns: {missing}. Required: ticker, exchange, units")
+            except Exception as e:
+                st.error(f"Could not parse CSV: {e}")
+
     # Initialise session state
     if "positions" not in st.session_state:
         st.session_state.positions = [
-            {"ticker": "", "exchange": "US", "units": 0.0}
+            {"ticker": "", "exchange": "US", "units": 0}
         ]
 
     def add_row():
@@ -290,6 +336,9 @@ if not valid_positions:
 
 with st.spinner("Fetching prices and resolving ETF holdings… this may take a minute."):
     from portfolio import build_portfolio
+    from data_fetcher import get_price_and_meta, get_etf_holdings
+    # Clear price cache on each run to avoid stale None results from previous failures
+    get_price_and_meta.clear()
     result = build_portfolio(valid_positions, display_ccy)
 
 if not result or "total_value" not in result:
@@ -349,6 +398,9 @@ with tab_mkt:
         with c2:
             tbl = exposure_table(by_market, "weight", "value_display", "market", ccy)
             st.dataframe(tbl, use_container_width=True, hide_index=True)
+        unanalysed_pct = by_market[by_market["market"]=="Unanalysed"]["pct"].sum()
+        if unanalysed_pct > 0:
+            st.caption(f"⚠️ {unanalysed_pct:.1f}% of portfolio is in ETF holdings beyond the top 25, which cannot be classified by free data sources.")
 
 
 # ── Tab: By Country ────────────────────────────────────────────────────────────
