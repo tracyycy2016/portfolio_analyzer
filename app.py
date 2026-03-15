@@ -217,17 +217,21 @@ with st.sidebar:
     st.markdown("### Add Positions")
     st.caption("Enter ticker, listing exchange, and number of units.")
 
+    # ── Initialise session state ────────────────────────────────────────────
+    if "positions" not in st.session_state:
+        st.session_state.positions = [{"ticker": "", "exchange": "US", "units": 0}]
+    if "csv_loaded_name" not in st.session_state:
+        st.session_state.csv_loaded_name = None
+
     # ── CSV upload ──────────────────────────────────────────────────────────
     with st.expander("📂 Upload CSV to pre-populate", expanded=False):
-        st.caption(
-            "CSV format: `ticker,exchange,units`  "
-            "(exchange must be US or CA)"
-        )
+        st.caption("CSV format: `ticker,exchange,units`  (exchange must be US or CA)")
         uploaded = st.file_uploader(
             "Choose CSV file", type="csv",
             label_visibility="collapsed", key="csv_upload"
         )
-        if uploaded is not None:
+        # Only process when a NEW file is uploaded (avoid re-processing on every rerun)
+        if uploaded is not None and uploaded.name != st.session_state.csv_loaded_name:
             try:
                 import io as _io
                 df_csv = pd.read_csv(_io.BytesIO(uploaded.read()))
@@ -242,14 +246,12 @@ with st.sidebar:
                         if t and e in ("US", "CA") and u > 0:
                             new_positions.append({"ticker": t, "exchange": e, "units": u})
                     if new_positions:
-                        st.session_state.positions = new_positions
-                        # Clear all widget keys so Streamlit uses the new values
-                        # instead of the cached widget state from previous render
+                        # Clear stale widget keys before updating positions
                         for key in list(st.session_state.keys()):
                             if key.startswith(("ticker_", "exch_", "units_")):
                                 del st.session_state[key]
-                        st.success(f"Loaded {len(new_positions)} positions from CSV.")
-                        st.rerun()
+                        st.session_state.positions = new_positions
+                        st.session_state.csv_loaded_name = uploaded.name
                     else:
                         st.error("No valid rows found. Check ticker, exchange (US/CA), and units.")
                 else:
@@ -258,17 +260,19 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Could not parse CSV: {e}")
 
-    # Initialise session state
-    if "positions" not in st.session_state:
-        st.session_state.positions = [
-            {"ticker": "", "exchange": "US", "units": 0}
-        ]
+        if st.session_state.csv_loaded_name:
+            st.success(f"✓ Loaded from {st.session_state.csv_loaded_name} — {len(st.session_state.positions)} positions")
 
+    # ── Position rows ────────────────────────────────────────────────────────
     def add_row():
-        st.session_state.positions.append({"ticker": "", "exchange": "US", "units": 0.0})
+        st.session_state.positions.append({"ticker": "", "exchange": "US", "units": 0})
 
     def remove_row(i):
         st.session_state.positions.pop(i)
+        # Clear widget keys for removed row and shift down
+        for key in list(st.session_state.keys()):
+            if key.startswith(("ticker_", "exch_", "units_")):
+                del st.session_state[key]
 
     for i, pos in enumerate(st.session_state.positions):
         c1, c2, c3, c4 = st.columns([3, 2, 3, 1])
