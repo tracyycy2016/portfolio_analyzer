@@ -273,9 +273,17 @@ with st.sidebar:
                         except Exception:
                             skipped += 1
                     if new_positions:
-                        for key in list(st.session_state.keys()):
-                            if key.startswith(("ticker_", "exch_", "units_")):
-                                del st.session_state[key]
+                        # Explicitly SET each widget key to the new value.
+                        # Just deleting keys is not enough — Streamlit may
+                        # render the widget before the deletion propagates.
+                        for i, p in enumerate(new_positions):
+                            st.session_state[f"ticker_{i}"] = p["ticker"]
+                            st.session_state[f"exch_{i}"]   = p["exchange"]
+                            st.session_state[f"units_{i}"]  = p["units"]
+                        # Delete any leftover keys beyond the new list length
+                        for i in range(len(new_positions), len(new_positions) + 20):
+                            for prefix in ("ticker_", "exch_", "units_"):
+                                st.session_state.pop(f"{prefix}{i}", None)
                         st.session_state.positions = new_positions
                         st.session_state.csv_loaded_name = uploaded.name
                         if skipped:
@@ -446,6 +454,38 @@ with tab_mkt:
         if unanalysed_pct > 0:
             st.caption(f"⚠️ {unanalysed_pct:.1f}% of portfolio is in ETF holdings beyond the analysed top holdings — market classification not available for these.")
 
+        # ── Per-position market breakdown ─────────────────────────────────────
+        with st.expander("📋 Market breakdown by position", expanded=False):
+            all_leaves = result["all_leaves"]
+            mkt_rows = []
+            for _, pos in positions_df.iterrows():
+                pos_leaves = all_leaves[
+                    (all_leaves["ticker"] != "UNANALYSED") &
+                    all_leaves.apply(lambda r: pos["yf_ticker"] in str(r.get("yf_ticker","")), axis=1)
+                ]
+                # Simpler: filter leaves by portfolio_weight contribution
+                pos_w_total = pos["value_display"] / total_value
+                # Get market breakdown from the leaves that belong to this position
+                # We track by matching yf_ticker prefix
+                pos_ticker_base = pos["yf_ticker"].replace(".TO","").replace(".V","")
+                mask = all_leaves["yf_ticker"].str.upper().str.startswith(pos_ticker_base)
+                pos_leaves = all_leaves[mask | (all_leaves["yf_ticker"] == pos["yf_ticker"])]
+                if pos_leaves.empty:
+                    pos_leaves = all_leaves.sample(0)  # empty
+                by_mkt_pos = pos_leaves.groupby("market")["portfolio_weight"].sum()
+                for mkt, w in sorted(by_mkt_pos.items(), key=lambda x: -x[1]):
+                    if w > 0.0001:
+                        mkt_rows.append({
+                            "Position": pos["ticker"],
+                            "Market": mkt,
+                            "% of Portfolio": f"{w*100:.2f}%",
+                            f"Value ({ccy})": fmt_money(w * total_value, ccy),
+                        })
+            if mkt_rows:
+                st.dataframe(pd.DataFrame(mkt_rows), use_container_width=True, hide_index=True)
+            else:
+                st.caption("Market breakdown not available — top holdings not resolved.")
+
 
 # ── Tab: By Country ────────────────────────────────────────────────────────────
 with tab_country:
@@ -455,21 +495,43 @@ with tab_country:
     else:
         df_c = by_country.dropna(subset=["country"]).copy()
         df_c["country"] = df_c["country"].fillna("Unknown")
-        unanalysed_country_pct = df_c[df_c["country"].isin(["Unanalysed","N/A"])]["pct"].sum()
-        df_c_chart = df_c[~df_c["country"].isin(["Unanalysed","N/A"])].head(15).copy()
+        # Include Unanalysed/N/A in chart so pie % match table % (same denominator)
+        # Show top 14 named countries + bundle rest into "Other" for readability
+        known = df_c[~df_c["country"].isin(["Unanalysed","N/A","Unknown"])].head(14)
+        special = df_c[df_c["country"].isin(["Unanalysed","N/A"])]
+        df_c_chart = pd.concat([known, special]).copy()
         c1, c2 = st.columns([1, 1])
         with c1:
-            fig = donut_chart(
-                df_c_chart["country"],
-                df_c_chart["value_display"],
-                "Top Countries",
-            )
+            fig = donut_chart(df_c_chart["country"], df_c_chart["value_display"], "Country Allocation")
             st.plotly_chart(fig, use_container_width=True)
         with c2:
             tbl = exposure_table(df_c, "weight", "value_display", "country", ccy)
             st.dataframe(tbl, use_container_width=True, hide_index=True)
+        unanalysed_country_pct = df_c[df_c["country"].isin(["Unanalysed","N/A"])]["pct"].sum()
         if unanalysed_country_pct > 0:
             st.caption(f"⚠️ {unanalysed_country_pct:.1f}% of portfolio is in ETF holdings beyond the analysed top holdings — country not available for these.")
+
+        # ── Per-position country breakdown ────────────────────────────────────
+        with st.expander("📋 Country breakdown by position", expanded=False):
+            all_leaves = result["all_leaves"]
+            cty_rows = []
+            for _, pos in positions_df.iterrows():
+                pos_ticker_base = pos["yf_ticker"].replace(".TO","").replace(".V","")
+                mask = all_leaves["yf_ticker"].str.upper().str.startswith(pos_ticker_base)
+                pos_leaves = all_leaves[mask | (all_leaves["yf_ticker"] == pos["yf_ticker"])]
+                by_cty_pos = pos_leaves.groupby("country")["portfolio_weight"].sum().sort_values(ascending=False)
+                for country, w in by_cty_pos.items():
+                    if w > 0.0001:
+                        cty_rows.append({
+                            "Position": pos["ticker"],
+                            "Country": str(country),
+                            "% of Portfolio": f"{w*100:.2f}%",
+                            f"Value ({ccy})": fmt_money(w * total_value, ccy),
+                        })
+            if cty_rows:
+                st.dataframe(pd.DataFrame(cty_rows), use_container_width=True, hide_index=True)
+            else:
+                st.caption("Country breakdown not available — top holdings not resolved.")
 
 
 # ── Tab: By Sector ─────────────────────────────────────────────────────────────
@@ -488,6 +550,39 @@ with tab_sector:
         with c2:
             tbl = exposure_table(df_s, "weight", "value_display", "sector", ccy)
             st.dataframe(tbl, use_container_width=True, hide_index=True)
+
+        # ── Per-position sector breakdown ────────────────────────────────────
+        with st.expander("📋 Sector breakdown by position", expanded=False):
+            from data_fetcher import get_sector_weightings as _gsw, get_top_holdings_funds as _gth
+            from portfolio import is_commodity
+            sector_rows = []
+            for _, pos in positions_df.iterrows():
+                sw = None
+                if is_commodity(pos["ticker"], pos["name"]):
+                    sw = {"N/A (Commodity)": 1.0}
+                elif pos["asset_type"] in ("ETF", "MUTUALFUND"):
+                    sw = _gsw(pos["yf_ticker"])
+                    if not sw:
+                        th = _gth(pos["yf_ticker"])
+                        if not th.empty and th.iloc[0]["weight"] >= 0.95:
+                            sw = _gsw(th.iloc[0]["ticker"])
+                else:
+                    from data_fetcher import get_price_and_meta as _gpm
+                    sec = _gpm(pos["yf_ticker"]).get("sector") or "Unknown"
+                    sw = {sec: 1.0}
+                pos_w = pos["value_display"] / total_value
+                if sw:
+                    for sector, w in sorted(sw.items(), key=lambda x: -x[1]):
+                        if w > 0.001:
+                            sector_rows.append({
+                                "Position": pos["ticker"],
+                                "Sector": sector,
+                                "% of Position": f"{w*100:.1f}%",
+                                "% of Portfolio": f"{w*pos_w*100:.2f}%",
+                                f"Value ({ccy})": fmt_money(w * pos["value_display"], ccy),
+                            })
+            if sector_rows:
+                st.dataframe(pd.DataFrame(sector_rows), use_container_width=True, hide_index=True)
 
 
 # ── Tab: Top 50 Stocks ─────────────────────────────────────────────────────────
