@@ -145,17 +145,20 @@ def donut_chart(labels, values, title: str):
     value_list = [p[1] for p in pairs]
     # Only show percent label if slice is large enough to read
     textinfo = "percent"
+    # Build index map so we can re-sort back after Plotly inevitably sorts
+    # The only reliable way: customdata carries our intended color
     fig = go.Figure(
         go.Pie(
             labels=label_list,
             values=value_list,
             hole=0.55,
-            textinfo=textinfo,
+            textinfo="percent",
             textfont_size=11,
             insidetextorientation="radial",
             marker=dict(colors=color_list, line=dict(color="#0f172a", width=2)),
-            hovertemplate="<b>%{label}</b><br>%{percent} (%{value:,.0f})<extra></extra>",
-            sort=False,   # keep the order we pass in (already sorted by weight desc)
+            hovertemplate="<b>%{label}</b><br>%{percent:.1%} (%{value:,.0f})<extra></extra>",
+            sort=False,
+            direction="clockwise",
         )
     )
     fig.update_layout(
@@ -242,24 +245,41 @@ with st.sidebar:
         if uploaded is not None and uploaded.name != st.session_state.csv_loaded_name:
             try:
                 import io as _io
-                df_csv = pd.read_csv(_io.BytesIO(uploaded.read()))
+                raw_bytes = uploaded.read()
+                # Try UTF-8 with BOM strip, fall back to latin-1
+                try:
+                    raw_text = raw_bytes.decode("utf-8-sig").strip()
+                except Exception:
+                    raw_text = raw_bytes.decode("latin-1").strip()
+                df_csv = pd.read_csv(_io.StringIO(raw_text))
                 df_csv.columns = [c.strip().lower() for c in df_csv.columns]
                 required = {"ticker", "exchange", "units"}
                 if required.issubset(set(df_csv.columns)):
                     new_positions = []
+                    skipped = 0
                     for _, row in df_csv.iterrows():
-                        t = str(row["ticker"]).strip().upper()
-                        e = str(row["exchange"]).strip().upper()
-                        u = int(float(str(row["units"]).strip()))
-                        if t and e in ("US", "CA") and u > 0:
-                            new_positions.append({"ticker": t, "exchange": e, "units": u})
+                        try:
+                            t = str(row["ticker"]).strip().upper()
+                            e = str(row["exchange"]).strip().upper()
+                            u_raw = str(row["units"]).strip()
+                            if not t or t in ("NAN", "TICKER") or not u_raw or u_raw == "NAN":
+                                skipped += 1
+                                continue
+                            u = int(float(u_raw))
+                            if t and e in ("US", "CA") and u > 0:
+                                new_positions.append({"ticker": t, "exchange": e, "units": u})
+                            else:
+                                skipped += 1
+                        except Exception:
+                            skipped += 1
                     if new_positions:
-                        # Clear stale widget keys before updating positions
                         for key in list(st.session_state.keys()):
                             if key.startswith(("ticker_", "exch_", "units_")):
                                 del st.session_state[key]
                         st.session_state.positions = new_positions
                         st.session_state.csv_loaded_name = uploaded.name
+                        if skipped:
+                            st.warning(f"Loaded {len(new_positions)} positions ({skipped} rows skipped).")
                     else:
                         st.error("No valid rows found. Check ticker, exchange (US/CA), and units.")
                 else:
@@ -357,9 +377,12 @@ if not valid_positions:
 
 with st.spinner("Fetching prices and resolving ETF holdings… this may take a minute."):
     from portfolio import build_portfolio
-    from data_fetcher import get_price_and_meta, get_etf_holdings
-    # Clear price cache on each run to avoid stale None results from previous failures
+    from data_fetcher import (get_price_and_meta, get_etf_holdings,
+                              get_sector_weightings, get_top_holdings_funds)
+    # Clear all caches on each run — prevents stale None results from previous failures
     get_price_and_meta.clear()
+    get_sector_weightings.clear()
+    get_top_holdings_funds.clear()
     result = build_portfolio(valid_positions, display_ccy)
 
 if not result or "total_value" not in result:
@@ -561,8 +584,7 @@ with tab_diag:
     )
 
     import yfinance as _yf
-    from data_fetcher import CA_TO_US_EQUIVALENT
-    from portfolio import get_top_holdings_funds
+    from data_fetcher import CA_TO_US_EQUIVALENT, get_top_holdings_funds
 
     # Known total holding counts per ETF (from fund documentation)
     KNOWN_TOTAL_HOLDINGS = {
