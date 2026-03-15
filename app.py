@@ -147,16 +147,20 @@ def donut_chart(labels, values, title: str):
     textinfo = "percent"
     # Build index map so we can re-sort back after Plotly inevitably sorts
     # The only reliable way: customdata carries our intended color
+    # Pre-compute percentages from the actual values so text matches the table
+    total_val = sum(value_list)
+    text_list = [f"{v/total_val*100:.1f}%" if total_val > 0 else "" for v in value_list]
     fig = go.Figure(
         go.Pie(
             labels=label_list,
             values=value_list,
             hole=0.55,
-            textinfo="percent",
+            text=text_list,
+            textinfo="text",
             textfont_size=11,
             insidetextorientation="radial",
             marker=dict(colors=color_list, line=dict(color="#0f172a", width=2)),
-            hovertemplate="<b>%{label}</b><br>%{percent:.1%} (%{value:,.0f})<extra></extra>",
+            hovertemplate="<b>%{label}</b><br>%{text} (%{value:,.0f})<extra></extra>",
             sort=False,
             direction="clockwise",
         )
@@ -417,11 +421,10 @@ by_stock = result["by_stock"]
 
 # ── Summary metrics ────────────────────────────────────────────────────────────
 st.markdown("### Portfolio Summary")
-m_cols = st.columns(4)
+m_cols = st.columns(3)
 metrics = [
     ("Total Value", fmt_money(total_value, ccy)),
     ("Positions", str(len(positions_df))),
-    ("Underlying Stocks", str(len(result["all_leaves"]))),
     ("Display Currency", ccy),
 ]
 for col, (label, val) in zip(m_cols, metrics):
@@ -459,32 +462,36 @@ with tab_mkt:
             all_leaves = result["all_leaves"]
             mkt_rows = []
             for _, pos in positions_df.iterrows():
-                pos_leaves = all_leaves[
-                    (all_leaves["ticker"] != "UNANALYSED") &
-                    all_leaves.apply(lambda r: pos["yf_ticker"] in str(r.get("yf_ticker","")), axis=1)
-                ]
-                # Simpler: filter leaves by portfolio_weight contribution
-                pos_w_total = pos["value_display"] / total_value
-                # Get market breakdown from the leaves that belong to this position
-                # We track by matching yf_ticker prefix
-                pos_ticker_base = pos["yf_ticker"].replace(".TO","").replace(".V","")
-                mask = all_leaves["yf_ticker"].str.upper().str.startswith(pos_ticker_base)
-                pos_leaves = all_leaves[mask | (all_leaves["yf_ticker"] == pos["yf_ticker"])]
+                if "source_position" in all_leaves.columns:
+                    pos_leaves = all_leaves[all_leaves["source_position"] == pos["ticker"]]
+                else:
+                    pos_leaves = all_leaves[all_leaves["ticker"] == pos["ticker"]]
                 if pos_leaves.empty:
-                    pos_leaves = all_leaves.sample(0)  # empty
+                    mkt_rows.append({
+                        "Position": pos["ticker"],
+                        "Market": "—",
+                        "% of Portfolio": fmt_pct(pos["value_display"]/total_value*100),
+                        f"Value ({ccy})": fmt_money(pos["value_display"], ccy),
+                    })
+                    continue
                 by_mkt_pos = pos_leaves.groupby("market")["portfolio_weight"].sum()
                 for mkt, w in sorted(by_mkt_pos.items(), key=lambda x: -x[1]):
                     if w > 0.0001:
                         mkt_rows.append({
                             "Position": pos["ticker"],
                             "Market": mkt,
-                            "% of Portfolio": f"{w*100:.2f}%",
+                            "% of Portfolio": fmt_pct(w*100),
                             f"Value ({ccy})": fmt_money(w * total_value, ccy),
                         })
             if mkt_rows:
-                st.dataframe(pd.DataFrame(mkt_rows), use_container_width=True, hide_index=True)
-            else:
-                st.caption("Market breakdown not available — top holdings not resolved.")
+                mkt_df = pd.DataFrame(mkt_rows)
+                positions_filter_m = st.multiselect(
+                    "Filter by position", options=sorted(mkt_df["Position"].unique()),
+                    default=[], key="mkt_pos_filter",
+                    placeholder="All positions (select to filter)"
+                )
+                display_df_m = mkt_df[mkt_df["Position"].isin(positions_filter_m)] if positions_filter_m else mkt_df
+                st.dataframe(display_df_m, use_container_width=True, hide_index=True)
 
 
 # ── Tab: By Country ────────────────────────────────────────────────────────────
@@ -516,22 +523,36 @@ with tab_country:
             all_leaves = result["all_leaves"]
             cty_rows = []
             for _, pos in positions_df.iterrows():
-                pos_ticker_base = pos["yf_ticker"].replace(".TO","").replace(".V","")
-                mask = all_leaves["yf_ticker"].str.upper().str.startswith(pos_ticker_base)
-                pos_leaves = all_leaves[mask | (all_leaves["yf_ticker"] == pos["yf_ticker"])]
+                if "source_position" in all_leaves.columns:
+                    pos_leaves = all_leaves[all_leaves["source_position"] == pos["ticker"]]
+                else:
+                    pos_leaves = all_leaves[all_leaves["ticker"] == pos["ticker"]]
+                if pos_leaves.empty:
+                    cty_rows.append({
+                        "Position": pos["ticker"],
+                        "Country": "—",
+                        "% of Portfolio": fmt_pct(pos["value_display"]/total_value*100),
+                        f"Value ({ccy})": fmt_money(pos["value_display"], ccy),
+                    })
+                    continue
                 by_cty_pos = pos_leaves.groupby("country")["portfolio_weight"].sum().sort_values(ascending=False)
                 for country, w in by_cty_pos.items():
                     if w > 0.0001:
                         cty_rows.append({
                             "Position": pos["ticker"],
                             "Country": str(country),
-                            "% of Portfolio": f"{w*100:.2f}%",
+                            "% of Portfolio": fmt_pct(w*100),
                             f"Value ({ccy})": fmt_money(w * total_value, ccy),
                         })
             if cty_rows:
-                st.dataframe(pd.DataFrame(cty_rows), use_container_width=True, hide_index=True)
-            else:
-                st.caption("Country breakdown not available — top holdings not resolved.")
+                cty_df = pd.DataFrame(cty_rows)
+                positions_filter_c = st.multiselect(
+                    "Filter by position", options=sorted(cty_df["Position"].unique()),
+                    default=[], key="cty_pos_filter",
+                    placeholder="All positions (select to filter)"
+                )
+                display_df_c = cty_df[cty_df["Position"].isin(positions_filter_c)] if positions_filter_c else cty_df
+                st.dataframe(display_df_c, use_container_width=True, hide_index=True)
 
 
 # ── Tab: By Sector ─────────────────────────────────────────────────────────────
@@ -628,21 +649,33 @@ with tab_stock:
         tbl = by_stock.copy()
         tbl["pct"] = tbl["pct"].apply(fmt_pct)
         tbl["value_display"] = tbl["value_display"].apply(lambda x: fmt_money(x, ccy))
-        tbl["sector"]  = tbl["sector"].fillna("—").replace("", "—").replace("None", "—")
-        tbl["country"] = tbl["country"].fillna("—").replace("", "—").replace("None", "—")
-        tbl["market"]  = tbl["market"].fillna("—").replace("", "—").replace("None", "—")
-        tbl = tbl.rename(
-            columns={
-                "ticker": "Ticker",
-                "name": "Name",
-                "pct": "Weight %",
-                "value_display": f"Value ({ccy})",
-                "sector": "Sector",
-                "country": "Country",
-                "market": "Market",
-            }
-        )[["Ticker", "Name", "Weight %", f"Value ({ccy})", "Sector", "Country", "Market"]]
-        st.dataframe(tbl.reset_index(drop=True), use_container_width=True, hide_index=True)
+        tbl["sector"]  = tbl["sector"].fillna("—").replace({"": "—", "None": "—"})
+        tbl["country"] = tbl["country"].fillna("—").replace({"": "—", "None": "—"})
+        tbl["market"]  = tbl["market"].fillna("—").replace({"": "—", "None": "—"})
+        tbl["source_position"] = tbl.get("source_position", pd.Series(["—"]*len(tbl))).fillna("—")
+        tbl = tbl.rename(columns={
+            "ticker": "Ticker", "name": "Name",
+            "pct": "Weight %", "value_display": f"Value ({ccy})",
+            "sector": "Sector", "country": "Country",
+            "market": "Market", "source_position": "From Position(s)",
+        })
+        cols = ["Ticker", "Name", "Weight %", f"Value ({ccy})", "From Position(s)", "Sector", "Country", "Market"]
+        cols = [c for c in cols if c in tbl.columns]
+        st.dataframe(tbl[cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+
+        # Holdings coverage summary
+        all_leaves = result["all_leaves"]
+        n_analysed = len(all_leaves[all_leaves["ticker"] != "UNANALYSED"]["ticker"].unique())
+        unanalysed_val = all_leaves[all_leaves["ticker"]=="UNANALYSED"]["value_display"].sum()
+        etf_val = positions_df[positions_df["asset_type"].isin(["ETF","MUTUALFUND"])]["value_display"].sum()
+        if etf_val > 0:
+            covered_pct = (1 - unanalysed_val / total_value) * 100
+            st.caption(
+                f"**Holdings analysis:** {n_analysed} unique underlying stocks identified, "
+                f"covering {covered_pct:.1f}% of portfolio by value. "
+                f"Remaining {unanalysed_val/total_value*100:.1f}% is in ETF holdings beyond the "
+                f"top 10 analysed per ETF. **Sector exposure uses full ETF fund profiles — 100% coverage.**"
+            )
 
 
 # ── Tab: My Positions ──────────────────────────────────────────────────────────
