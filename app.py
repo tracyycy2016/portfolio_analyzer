@@ -33,6 +33,10 @@ h1, h2, h3 { font-family: 'DM Serif Display', serif; }
     background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
     border-right: 1px solid #334155;
 }
+/* Make sidebar content scrollable when many positions added */
+[data-testid="stSidebar"] > div:first-child {
+    overflow-y: auto !important;
+}
 [data-testid="stSidebar"] * { color: #e2e8f0 !important; }
 [data-testid="stSidebar"] .stTextInput input,
 [data-testid="stSidebar"] .stNumberInput input,
@@ -239,6 +243,11 @@ with st.sidebar:
                             new_positions.append({"ticker": t, "exchange": e, "units": u})
                     if new_positions:
                         st.session_state.positions = new_positions
+                        # Clear all widget keys so Streamlit uses the new values
+                        # instead of the cached widget state from previous render
+                        for key in list(st.session_state.keys()):
+                            if key.startswith(("ticker_", "exch_", "units_")):
+                                del st.session_state[key]
                         st.success(f"Loaded {len(new_positions)} positions from CSV.")
                         st.rerun()
                     else:
