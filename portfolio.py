@@ -257,6 +257,47 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
             }))
             market_contributions.append({"market": mkt, "weight": pos_weight})
 
+    # Store per-position detail for breakdown table (same source as top chart)
+    # market_contributions has: {market, weight, position}
+    market_contributions_detailed = []
+    for _, pos in positions_df.iterrows():
+        pos_weight = pos["value_display"] / total_value
+        if is_commodity(pos["ticker"], pos["name"]):
+            market_contributions_detailed.append({
+                "position": pos["ticker"], "market": "N/A",
+                "weight": pos_weight, "pos_weight": pos_weight
+            })
+            continue
+        if pos["asset_type"] in ("ETF", "MUTUALFUND"):
+            mw = get_etf_market_weights(pos["yf_ticker"])
+            if mw is None:
+                th = get_top_holdings_funds(pos["yf_ticker"])
+                if len(th) == 1 and th.iloc[0]["weight"] >= 0.95:
+                    mw = get_etf_market_weights(th.iloc[0]["ticker"])
+            if mw:
+                for mkt, w in mw.items():
+                    market_contributions_detailed.append({
+                        "position": pos["ticker"], "market": mkt,
+                        "weight": pos_weight * w, "pos_weight": pos_weight
+                    })
+            else:
+                market_contributions_detailed.append({
+                    "position": pos["ticker"], "market": "Mixed/Other",
+                    "weight": pos_weight, "pos_weight": pos_weight
+                })
+        else:
+            meta = get_price_and_meta(pos["yf_ticker"])
+            mkt = infer_market(pd.Series({
+                "yf_ticker": pos["yf_ticker"],
+                "exchange": meta.get("exchange"),
+                "country": meta.get("country"),
+            }))
+            market_contributions_detailed.append({
+                "position": pos["ticker"], "market": mkt,
+                "weight": pos_weight, "pos_weight": pos_weight
+            })
+
+    market_detail_df = pd.DataFrame(market_contributions_detailed)
     market_df = pd.DataFrame(market_contributions)
     by_market_fund = (
         market_df.groupby("market")["weight"].sum()
@@ -392,7 +433,7 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
             sector=("sector", "first"),
             country=("country", "first"),
             market=("market", "first"),
-            source_position=("source_position", lambda x: ", ".join(sorted(set(x)))),
+            source_position=("source_position", lambda x: ", ".join(sorted(set(str(v) for v in x if pd.notna(v))))),
         )
         .reset_index()
         .sort_values("weight", ascending=False)
@@ -404,7 +445,7 @@ def build_portfolio(positions: List[Dict], display_ccy: str = "USD") -> Dict:
         "positions_detail": positions_df,
         "all_leaves":       leaves_df,
         "by_market":        by_market_fund,   # from fund description (100% coverage)
-        "by_market_detail": by_market,        # from top holdings (partial, for breakdown table)
+        "by_market_detail": market_detail_df,  # per-position detail (same source as top chart)
         "by_country":       by_country,
         "by_sector":        by_sector,
         "by_stock":         by_stock,
