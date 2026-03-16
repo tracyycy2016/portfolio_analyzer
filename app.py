@@ -541,8 +541,8 @@ with tab_stock:
     if by_stock.empty:
         st.info("No stock data available.")
     else:
-        # Bar chart of top 20 — single accent color
-        top20 = by_stock.head(20).iloc[::-1]
+        # Bar chart of top 10 — single accent color
+        top20 = by_stock.head(10).iloc[::-1]
         fig = go.Figure(
             go.Bar(
                 x=top20["pct"],
@@ -559,7 +559,7 @@ with tab_stock:
         )
         fig.update_layout(
             title=dict(
-                text="Top 20 Holdings by Weight",
+                text="Top 10 Holdings by Weight",
                 font=dict(family="DM Serif Display", size=16, color="#f1f5f9"),
             ),
             paper_bgcolor="rgba(0,0,0,0)",
@@ -568,7 +568,7 @@ with tab_stock:
             xaxis=dict(showgrid=True, gridcolor="#1e293b", color="#475569", ticksuffix="%"),
             yaxis=dict(showgrid=False, color="#e2e8f0"),
             margin=dict(l=10, r=60, t=40, b=10),
-            height=500,
+            height=320,
         )
         st.plotly_chart(fig, use_container_width=True)
 
