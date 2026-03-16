@@ -102,6 +102,21 @@ SUFFIX_TO_BUCKET = {
 }
 
 
+# Well-known foreign stocks that trade on US exchanges (ADRs/cross-listed)
+# Used as fallback when yfinance doesn't return country metadata.
+KNOWN_FOREIGN_US_LISTED = {
+    "ASML": "Netherlands", "SHOP": "Canada", "RY": "Canada", "TD": "Canada",
+    "BNS": "Canada", "BMO": "Canada", "CM": "Canada", "ENB": "Canada",
+    "CNQ": "Canada", "SU": "Canada", "BCE": "Canada", "T": "Canada",
+    "ABB": "Switzerland", "NOVN": "Switzerland", "ROG": "Switzerland",
+    "SAP": "Germany", "SIEGY": "Germany", "BAYRY": "Germany",
+    "SONY": "Japan", "TM": "Japan", "HMC": "Japan", "NMR": "Japan",
+    "TSM": "Taiwan", "UMC": "Taiwan",
+    "BABA": "China", "JD": "China", "PDD": "China", "BIDU": "China",
+    "INFY": "India", "WIT": "India", "HDB": "India",
+}
+
+
 def infer_market(row: pd.Series) -> str:
     yf_t    = str(row.get("yf_ticker") or row.get("ticker") or "")
     exch    = str(row.get("exchange") or "")
@@ -117,6 +132,17 @@ def infer_market(row: pd.Series) -> str:
         return "Developed Market (Non-North America)"
     if country in EMERGING:
         return "Emerging Market"
+
+    # Check known foreign stocks on US exchanges before exchange lookup
+    base_ticker = yf_t.upper().replace(".TO", "").replace(".V", "")
+    known_country = KNOWN_FOREIGN_US_LISTED.get(base_ticker)
+    if known_country:
+        if known_country == "Canada":
+            return "Canada"
+        if known_country in DEVELOPED_NON_NA:
+            return "Developed Market (Non-North America)"
+        if known_country in EMERGING:
+            return "Emerging Market"
 
     # Fall back to exchange code (for stocks with no country metadata)
     bucket = EXCHANGE_TO_BUCKET.get(exch.upper())
