@@ -587,6 +587,7 @@ ETF_MARKET_OVERRIDES = {
     "QQQ":  {"United States": 1.0},
     "SPY":  {"United States": 1.0},
     "IVV":  {"United States": 1.0},
+    "VT":  {"United States": 0.60, "Developed Market (Non-North America)": 0.27, "Canada": 0.03, "Emerging Market": 0.1},
 }
 
 
