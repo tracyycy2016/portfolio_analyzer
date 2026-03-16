@@ -463,45 +463,24 @@ with tab_mkt:
         if unanalysed_pct > 0:
             st.caption(f"⚠️ {unanalysed_pct:.1f}% in ETF holdings beyond top 10 — market not available.")
 
-        # ── Per-position market breakdown ─────────────────────────────────────
+        # ── Per-position market breakdown (same source as top chart) ─────────────
         with st.expander("📋 Market breakdown by position", expanded=False):
-            all_leaves = result.get("all_leaves", pd.DataFrame())
-            mkt_rows = []
-            for _, pos in positions_df.iterrows():
-                if "source_position" in all_leaves.columns:
-                    pos_leaves = all_leaves[all_leaves["source_position"] == pos["ticker"]]
-                else:
-                    pos_leaves = all_leaves[all_leaves["ticker"] == pos["ticker"]]
-                if pos_leaves.empty:
+            mkt_detail = result.get("by_market_detail", pd.DataFrame())
+            if not mkt_detail.empty:
+                mkt_rows = []
+                for _, row in mkt_detail.iterrows():
+                    pos_w = row["pos_weight"]
+                    w = row["weight"]
+                    pct_of_pos = (w / pos_w * 100) if pos_w > 0 else 0
                     mkt_rows.append({
-                        "Position": pos["ticker"],
-                        "Market": "—",
-                        "% of Position": "100.0%",
-                        "% of Portfolio": fmt_pct(pos["value_display"]/total_value*100),
-                        f"Value ({ccy})": fmt_money(pos["value_display"], ccy),
+                        "Position":        row["position"],
+                        "Market":          row["market"],
+                        "% of Position":   fmt_pct(pct_of_pos),
+                        "% of Portfolio":  fmt_pct(w * 100),
+                        f"Value ({ccy})":  fmt_money(w * total_value, ccy),
                     })
-                    continue
-                by_mkt_pos = pos_leaves.groupby("market")["portfolio_weight"].sum()
-                for mkt, w in sorted(by_mkt_pos.items(), key=lambda x: -x[1]):
-                    if w > 0.0001:
-                        pos_w_total = pos["value_display"] / total_value if total_value > 0 else 0
-                        pct_of_pos = (w / pos_w_total * 100) if pos_w_total > 0 else 0
-                        mkt_rows.append({
-                            "Position": pos["ticker"],
-                            "Market": mkt,
-                            "% of Position": fmt_pct(pct_of_pos),
-                            "% of Portfolio": fmt_pct(w*100),
-                            f"Value ({ccy})": fmt_money(w * total_value, ccy),
-                        })
-            if mkt_rows:
                 mkt_df = pd.DataFrame(mkt_rows)
-                positions_filter_m = st.multiselect(
-                    "Filter by position", options=sorted(mkt_df["Position"].unique()),
-                    default=[], key="mkt_pos_filter",
-                    placeholder="All positions (select to filter)"
-                )
-                display_df_m = mkt_df[mkt_df["Position"].isin(positions_filter_m)] if positions_filter_m else mkt_df
-                st.dataframe(display_df_m, use_container_width=True, hide_index=True)
+                st.dataframe(mkt_df, use_container_width=True, hide_index=True)
 
 
 # ── Tab: By Sector ─────────────────────────────────────────────────────────────
@@ -594,7 +573,7 @@ with tab_stock:
         st.plotly_chart(fig, use_container_width=True)
 
         # Full table
-        st.markdown("#### All Top 50 Holdings")
+        st.markdown("#### Underlying stocks identified")
         tbl = by_stock.copy().reset_index(drop=True)
         tbl.insert(0, "Rank", range(1, len(tbl) + 1))
         tbl["pct"] = tbl["pct"].apply(fmt_pct)
@@ -631,7 +610,7 @@ with tab_stock:
 # ── Tab: My Positions ──────────────────────────────────────────────────────────
 with tab_positions:
     st.markdown('<div class="section-header">Your Input Positions</div>', unsafe_allow_html=True)
-    pos_display = positions_df.copy()
+    pos_display = positions_df.copy().sort_values("value_display", ascending=False)
     pos_display["pct_of_portfolio"] = (pos_display["value_display"] / total_value * 100).apply(fmt_pct)
     pos_display["value_display"] = pos_display["value_display"].apply(lambda x: fmt_money(x, ccy))
     pos_display["price"] = pos_display.apply(
