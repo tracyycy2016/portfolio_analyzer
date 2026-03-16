@@ -546,20 +546,53 @@ CATEGORY_MARKET_MAP = {
 }
 
 
+# ── Hardcoded ETF market overrides (takes priority over description/category) ──
+# Use base ticker (no .TO/.V suffix) for CA-listed ETFs.
+# Weights must sum to 1.0. Based on actual fund index methodology.
+ETF_MARKET_OVERRIDES = {
+    # Vanguard Canada
+    "VFV":  {"United States": 1.0},
+    "VEF":  {"Developed Market (Non-North America)": 0.90, "Canada": 0.10},
+    "VIU":  {"Developed Market (Non-North America)": 1.0},
+    "VCN":  {"Canada": 1.0},
+    "VGG":  {"United States": 1.0},
+    # iShares Canada
+    "IQLT": {"Developed Market (Non-North America)": 0.92, "Canada": 0.08},
+    "XIC":  {"Canada": 1.0},
+    "XSP":  {"United States": 1.0},
+    # BMO
+    "ZEM":  {"Emerging Market": 1.0},
+    "ZSP":  {"United States": 1.0},
+    "ZCN":  {"Canada": 1.0},
+    # iShares US
+    "IGF":  {"United States": 0.40, "Developed Market (Non-North America)": 0.52, "Canada": 0.08},
+    "EEM":  {"Emerging Market": 1.0},
+    "VEA":  {"Developed Market (Non-North America)": 1.0},
+    # Vanguard US
+    "VOO":  {"United States": 1.0},
+    "VTI":  {"United States": 1.0},
+    "VWO":  {"Emerging Market": 1.0},
+}
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_etf_market_weights(yf_ticker: str) -> Optional[dict]:
     """
-    Classify an ETF's geographic market exposure using fund description + category.
-    Returns {market_bucket: weight} summing to 1.0, or None (use holdings fallback).
-    Confirmed working for: VFV.TO, VEF.TO, VIU.TO, XLU, IQLT, ZEM.TO, EEM, VOO, VEA.
-    Returns None for mixed/infrastructure ETFs (IGF etc.) → fall back to top holdings.
+    Classify an ETF's geographic market exposure.
+    Priority: hardcoded overrides → description keywords → fund category.
+    Returns {market_bucket: weight} summing to 1.0, or None (mixed/unknown).
     """
+    # Strip exchange suffix to get base ticker for override lookup
+    base = yf_ticker.upper().replace(".TO", "").replace(".V", "")
+    if base in ETF_MARKET_OVERRIDES:
+        return ETF_MARKET_OVERRIDES[base]
+
     try:
         info = yf.Ticker(yf_ticker).info or {}
         desc = (info.get("longBusinessSummary") or "").lower()
         category = info.get("category") or ""
 
-        # Try description keywords first (more precise)
+        # Try description keywords (more precise than category)
         for keyword, mapping in DESCRIPTION_MARKET_MAP:
             if keyword.lower() in desc:
                 return mapping  # None means commodity
