@@ -568,10 +568,25 @@ ETF_MARKET_OVERRIDES = {
     "IGF":  {"United States": 0.40, "Developed Market (Non-North America)": 0.52, "Canada": 0.08},
     "EEM":  {"Emerging Market": 1.0},
     "VEA":  {"Developed Market (Non-North America)": 1.0},
+    "IQLT": {"Developed Market (Non-North America)": 0.92, "Canada": 0.08},
+    # State Street US sector ETFs — all US
+    "XLU":  {"United States": 1.0},
+    "XLK":  {"United States": 1.0},
+    "XLF":  {"United States": 1.0},
+    "XLE":  {"United States": 1.0},
+    "XLV":  {"United States": 1.0},
+    "XLI":  {"United States": 1.0},
+    "XLB":  {"United States": 1.0},
+    "XLY":  {"United States": 1.0},
+    "XLP":  {"United States": 1.0},
+    "XLre": {"United States": 1.0},
     # Vanguard US
     "VOO":  {"United States": 1.0},
     "VTI":  {"United States": 1.0},
     "VWO":  {"Emerging Market": 1.0},
+    "QQQ":  {"United States": 1.0},
+    "SPY":  {"United States": 1.0},
+    "IVV":  {"United States": 1.0},
 }
 
 
